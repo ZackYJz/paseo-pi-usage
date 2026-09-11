@@ -1,0 +1,6 @@
+{
+  "id": "paseo-pi-usage",
+  "requirements": {
+    "paseo": ">=0.8.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "paseo-pi-usage",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.8.0",
+    "@getpaseo/plugin": "0.8.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^24.3.0",
+    "@types/react": "~19.2.0",
+    "@types/react-test-renderer": "^19.3.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-test-renderer": "^19.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
+  }
+}
