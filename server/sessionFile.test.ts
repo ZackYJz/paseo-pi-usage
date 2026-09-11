@@ -49,7 +49,7 @@ const header = JSON.stringify({
   version: 3,
   id: "01a08f7c-db66-7074-883f-fa168c7aea83",
   timestamp: "2026-09-11T08:01:59.655Z",
-  cwd: "/Users/liyijun/pi-demo",
+  cwd: "/home/user/pi-demo",
 });
 
 afterEach(async () => {
@@ -94,7 +94,7 @@ describe("PiSessionFileReader", () => {
     expect(reader.snapshot.userTurns).toBe(1);
     expect(reader.snapshot.compactions).toBe(1);
     expect(reader.snapshot.sessionId).toBe("01a08f7c-db66-7074-883f-fa168c7aea83");
-    expect(reader.snapshot.cwd).toBe("/Users/liyijun/pi-demo");
+    expect(reader.snapshot.cwd).toBe("/home/user/pi-demo");
     expect(reader.snapshot.startedAt).toBe("2026-09-11T08:01:59.655Z");
     expect(reader.snapshot.model).toBe("aliyun/qwen3.8-max");
     expect(reader.snapshot.thinkingLevel).toBe("xhigh");

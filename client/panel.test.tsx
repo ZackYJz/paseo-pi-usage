@@ -60,7 +60,7 @@ const okSnapshot: UsageSnapshot = {
   model: "aliyun/qwen3.8-max",
   thinkingLevel: "xhigh",
   sessionId: "01a08f7c",
-  sessionFile: "/Users/liyijun/.pi/agent/sessions/--Users-liyijun-pi-demo--/2026-09-11_01a08f7c.jsonl",
+  sessionFile: "/home/user/.pi/agent/sessions/--home-user-pi-demo--/2026-09-11_01a08f7c.jsonl",
   totals: { input: 180_704, output: 69_842, cacheRead: 7_964_160, cacheWrite: 0, reasoning: 32_862, cost: 0.4213 },
   totalTokens: 8_214_706,
   calls: 79,

@@ -37,7 +37,7 @@
 npm install
 npm run test        # vitest：解析器、resolver、格式化
 npm run typecheck
-paseo plugin install /Users/liyijun/codex_default/paseo-pi-usage
+paseo plugin install /absolute/path/to/paseo-pi-usage
 paseo plugin ls     # 需要 running
 paseo plugin logs paseo-pi-usage
 paseo plugin reload paseo-pi-usage   # 改完源码后必须 reload，不要重启 daemon

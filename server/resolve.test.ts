@@ -44,8 +44,8 @@ afterEach(async () => {
 describe("piSessionDir", () => {
   it("encodes cwd the way Pi's session manager does", () => {
     vi.stubEnv("PI_CODING_AGENT_SESSION_DIR", "");
-    expect(piSessionDir("/Users/liyijun/pi-demo", "/Users/liyijun/.pi/agent")).toBe(
-      "/Users/liyijun/.pi/agent/sessions/--Users-liyijun-pi-demo--",
+    expect(piSessionDir("/home/user/pi-demo", "/home/user/.pi/agent")).toBe(
+      "/home/user/.pi/agent/sessions/--home-user-pi-demo--",
     );
   });
 
@@ -64,7 +64,7 @@ describe("PiSessionResolver", () => {
     const { paseo, refresh } = fakePaseo({
       id: "agent-1",
       provider: "pi",
-      cwd: "/Users/liyijun/pi-demo",
+      cwd: "/home/user/pi-demo",
       persistence: { provider: "pi", sessionId: "01a08f7c", nativeHandle: sessionFile },
       lastUsage: { contextWindowMaxTokens: 200_000 },
     });
