@@ -207,6 +207,12 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Token 明细（整个会话累计）</Text>
+        <Row
+          styles={styles}
+          label="总 token"
+          value={formatTokens(snapshot.totalTokens)}
+          detail="= ↑输入 + ↓输出 + R缓存读 + W缓存写"
+        />
         <Row styles={styles} label="↑ 输入" value={formatTokens(snapshot.totals.input)} detail={groupDigits(snapshot.totals.input)} />
         <Row styles={styles} label="↓ 输出" value={formatTokens(snapshot.totals.output)} detail={groupDigits(snapshot.totals.output)} />
         <Row styles={styles} label="R 缓存读" value={formatTokens(snapshot.totals.cacheRead)} detail={groupDigits(snapshot.totals.cacheRead)} />
@@ -214,13 +220,12 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
         <Row styles={styles} label="✳ 思考" value={formatTokens(snapshot.totals.reasoning)} detail={groupDigits(snapshot.totals.reasoning)} />
         <Row
           styles={styles}
-          label="缓存命中率 · 最近调用"
+          label="命中率 · 最近调用"
           value={snapshot.cacheHitRate === null ? "—" : `${snapshot.cacheHitRate.toFixed(1)}%`}
-          detail="与 Pi 状态栏同口径：cacheRead / 该次 prompt"
         />
         <Row
           styles={styles}
-          label="缓存命中率 · 全会话"
+          label="命中率 · 全会话"
           value={sessionRate === null ? "—" : `${sessionRate.toFixed(1)}%`}
           detail="ΣcacheRead / Σprompt tokens"
         />
@@ -339,11 +344,7 @@ function Row({ styles, label, value, detail }: { styles: Styles; label: string; 
       </Text>
       <View style={styles.rowValue}>
         <Text style={styles.rowValueText}>{value}</Text>
-        {detail ? (
-          <Text style={styles.rowDetail} numberOfLines={1}>
-            {detail}
-          </Text>
-        ) : null}
+        {detail ? <Text style={styles.rowDetail}>{detail}</Text> : null}
       </View>
     </View>
   );

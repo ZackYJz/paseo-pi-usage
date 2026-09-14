@@ -161,8 +161,10 @@ test("renders cumulative totals, context and per-call detail", async () => {
   expect(text).toContain("8.0M");
   expect(text).toContain("✳ 思考");
   expect(text).toContain("99.6%");
-  expect(text).toContain("缓存命中率 · 全会话");
+  expect(text).toContain("命中率 · 全会话");
+  expect(text).toContain("= ↑输入 + ↓输出 + R缓存读 + W缓存写");
   expect(text).toContain("97.8%"); // ΣcacheRead / Σprompt tokens
+  expect(text).not.toContain("与 Pi 状态栏同口径");
   // Session facts.
   expect(text).toContain("aliyun/qwen3.8-max");
   expect(text).toContain("thinking xhigh");
