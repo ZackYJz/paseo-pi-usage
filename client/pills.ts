@@ -71,7 +71,10 @@ export function startUsagePills(client: PluginClientContext): () => void {
     return buildPillTooltip({
       status: snapshot.status,
       totals: snapshot.totals,
+      provider: snapshot.provider,
+      error: snapshot.error,
       contextPercent: snapshot.contextPercent,
+      contextStale: snapshot.contextStale,
     });
   }
 

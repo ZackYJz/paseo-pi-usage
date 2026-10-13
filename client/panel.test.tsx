@@ -62,8 +62,9 @@ const okSnapshot: UsageSnapshot = {
   sessionId: "01a08f7c",
   sessionFile: "/home/user/.pi/agent/sessions/--home-user-pi-demo--/2026-09-11_01a08f7c.jsonl",
   totals: { input: 180_704, output: 69_842, cacheRead: 7_964_160, cacheWrite: 0, reasoning: 32_862, cost: 0.4213 },
+  estimatedCost: 2.5,
   totalTokens: 8_214_706,
-  calls: 79,
+  callCount: 79,
   userTurns: 3,
   compactions: 1,
   contextUsedTokens: 167_727,
@@ -82,8 +83,8 @@ const okCalls = {
   error: null,
   truncated: true,
   perModel: [
-    { key: "aliyun/qwen3.8-max", tokens: 8_000_000, cost: 0.4 },
-    { key: "Tools/summaries", tokens: 214_706, cost: 0.02 },
+    { key: "aliyun/qwen3.8-max", tokens: 8_000_000, cost: 0.4, estimated: 2.4 },
+    { key: "Tools/summaries", tokens: 214_706, cost: 0.02, estimated: 0.1 },
   ],
   calls: [
     {
@@ -97,6 +98,7 @@ const okCalls = {
       cacheWrite: 0,
       reasoning: 6,
       cost: 0.004,
+      estimated: 0.0421,
       totalTokens: 167_727,
       contextTokens: 167_727,
       stopReason: "toolUse",
@@ -127,6 +129,13 @@ async function flush() {
 
 const visible = () => JSON.stringify(renderer.toJSON());
 
+function expandCalls() {
+  const header = renderer.root.find((node) => node.props?.accessibilityLabel === "展开最近 40 次 LLM 调用");
+  act(() => {
+    header.props.onPress();
+  });
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
@@ -147,13 +156,16 @@ test("renders cumulative totals, context and per-call detail", async () => {
   await flush();
 
   const text = visible();
+  expect(text).toContain("\"backgroundColor\":\"#ffffff\""); // light themes keep the surface
   expect(text).toContain("π Token 用量");
   // The subtitle is the session title, explicitly labelled so it reads as metadata.
   expect(text).toContain("会话：统计 token");
   // Hero numbers.
   expect(text).toContain("8.2M"); // total tokens
   expect(text).toContain("8,214,706");
-  expect(text).toContain("$0.421");
+  expect(text).toContain("$0.421"); // Pi-recorded cost row
+  expect(text).toContain("花费（官方价）");
+  expect(text).toContain("$2.500"); // official-price estimate card
   expect(text).toContain("64%"); // context percent
   expect(text).toContain("168k / 262k");
   // Breakdown rows.
@@ -170,11 +182,12 @@ test("renders cumulative totals, context and per-call detail", async () => {
   expect(text).toContain("thinking xhigh");
   expect(text).toContain("用户轮次 3");
   expect(text).toContain("压缩 1 次");
-  // Per-model + call table.
+  // Per-model list is visible; the call table stays collapsed by default.
   expect(text).toContain("Tools/summaries");
   expect(text).toContain("qwen3.8-max");
   expect(text).toContain("79");
-  expect(text).toContain("更早的调用已从内存中丢弃");
+  expect(text).not.toContain("#79");
+  expect(text).not.toContain("更早的调用已从内存中丢弃");
   // Session file.
   expect(text).toContain("652.1 KB");
   expect(mocks.snapshot).toHaveBeenCalledWith({ agentIds: ["agent-1"] });
@@ -197,10 +210,35 @@ test("close button dismisses the popover through the host close callback", async
 test("hides the wide call columns even on wide layouts", async () => {
   await renderPopover();
   await flush();
+  expandCalls();
 
   const text = visible();
   expect(text).toContain("8.2M");
   expect(text).not.toContain(" ctx");
+});
+
+test("keeps the call table collapsed until the header is pressed", async () => {
+  await renderPopover();
+  await flush();
+
+  expect(visible()).not.toContain("#79");
+
+  expandCalls();
+
+  const text = visible();
+  expect(text).toContain("#79");
+  expect(text).toContain("更早的调用已从内存中丢弃");
+  expect(text).toContain("$0.042"); // per-call official-price estimate
+});
+
+test("drops the extra background layer on dark themes", async () => {
+  await renderPopover({
+    ...popoverProps,
+    theme: { colors: { ...theme.colors, surface0: "#17181a" } },
+  } as unknown as PluginButtonContentProps);
+  await flush();
+
+  expect(visible()).toContain("\"backgroundColor\":\"transparent\"");
 });
 
 test("explains a surface outside an agent context", async () => {

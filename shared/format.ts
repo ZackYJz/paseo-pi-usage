@@ -46,20 +46,6 @@ export function sessionCacheHitRate(totals: UsageTotals): number | null {
   return (totals.cacheRead / promptTokens) * 100;
 }
 
-/**
- * Hover tooltip with the full-precision breakdown the pill label is too narrow
- * to carry (Paseo truncates pill labels at ~17 glyphs).
- */
-export function buildPillTooltip(snapshot: PillLabelInput & { contextPercent: number | null }): string {
-  if (snapshot.status !== "ok") return "Pi token 用量";
-  const bits = [`↑${formatTokens(snapshot.totals.input)}`, `↓${formatTokens(snapshot.totals.output)}`];
-  const rate = sessionCacheHitRate(snapshot.totals);
-  if (rate !== null) bits.push(`缓存命中 ${rate.toFixed(1)}%`);
-  if (snapshot.totals.cost > 0) bits.push(formatCost(snapshot.totals.cost));
-  if (snapshot.contextPercent !== null) bits.push(`上下文 ${formatPercent(snapshot.contextPercent)}%`);
-  return `Pi token 用量 · ${bits.join(" ")}`;
-}
-
 export function formatPercent(percent: number | null): string {
   if (percent === null || !Number.isFinite(percent)) return "?";
   return percent >= 10 ? percent.toFixed(0) : percent.toFixed(1);
@@ -68,6 +54,37 @@ export function formatPercent(percent: number | null): string {
 export interface PillLabelInput {
   status: "ok" | "no_session" | "not_pi" | "error";
   totals: UsageTotals;
+  provider?: string | null;
+  error?: string | null;
+}
+
+/**
+ * Hover tooltip with the full-precision breakdown the pill label is too narrow
+ * to carry (Paseo truncates pill labels at ~17 glyphs).
+ */
+export function buildPillTooltip(
+  snapshot: PillLabelInput & { contextPercent: number | null; contextStale?: boolean },
+): string {
+  if (snapshot.status === "error") {
+    return `Pi token 用量 · ${snapshot.error ? `读取失败：${snapshot.error}` : "读取失败"}`;
+  }
+  if (snapshot.status === "not_pi") {
+    return `Pi token 用量 · 当前代理使用 ${snapshot.provider ?? "其他"} provider，不统计 Pi 用量`;
+  }
+  if (snapshot.status === "no_session") {
+    return "Pi token 用量 · 暂无活动会话";
+  }
+  // status === "ok"
+  const bits = [`↑${formatTokens(snapshot.totals.input)}`, `↓${formatTokens(snapshot.totals.output)}`];
+  const rate = sessionCacheHitRate(snapshot.totals);
+  if (rate !== null) bits.push(`缓存命中 ${rate.toFixed(1)}%`);
+  if (snapshot.totals.cost > 0) bits.push(formatCost(snapshot.totals.cost));
+  if (snapshot.contextStale) {
+    bits.push("上下文刷新中…");
+  } else if (snapshot.contextPercent !== null) {
+    bits.push(`上下文 ${formatPercent(snapshot.contextPercent)}%`);
+  }
+  return `Pi token 用量 · ${bits.join(" ")}`;
 }
 
 /**

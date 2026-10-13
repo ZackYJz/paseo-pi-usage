@@ -1,7 +1,7 @@
 import type { PluginButtonContentProps, PluginHostProps } from "@getpaseo/plugin/client";
 import { useAgent, useRpc } from "@getpaseo/plugin/client";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { formatCost, formatPercent, formatTokens, sessionCacheHitRate } from "../shared/format";
 import type { CallUsage, ModelUsage, UsageSnapshot } from "../shared/usage";
@@ -35,6 +35,22 @@ function formatBytes(bytes: number): string {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The plugin SDK exposes theme colors but no light/dark flag. The popover host
+ * already paints its own surface, so our extra `surface0` layer only shows up
+ * as a visible inset rectangle on dark themes — drop it there by luminance.
+ */
+function isDarkColor(color: string): boolean {
+  let hex = color.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(hex)) hex = hex.split("").map((ch) => ch + ch).join("");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return false;
+  const value = Number.parseInt(hex, 16);
+  const r = (value >> 16) & 0xff;
+  const g = (value >> 8) & 0xff;
+  const b = value & 0xff;
+  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
 }
 
 /**
@@ -92,12 +108,16 @@ function TokenUsageView({
   const callsQuery = useQuery({
     queryKey: ["pi-usage", "calls", agentId, CALL_LIMIT],
     queryFn: () => callsRpc({ agentId, limit: CALL_LIMIT }),
+    // Only a readable session can have calls; skipping the RPC for `not_pi` /
+    // `no_session` / `error` avoids a round trip that always comes back empty.
+    enabled: snapshotQuery.data?.status === "ok",
     refetchInterval: intervalMs,
     staleTime: 1000,
   });
 
   const snapshot = snapshotQuery.data ?? null;
   const calls = callsQuery.data ?? null;
+  const [callsOpen, setCallsOpen] = useState(false);
 
   return (
     <View style={styles.screen}>
@@ -150,6 +170,8 @@ function TokenUsageView({
             truncated={calls?.truncated ?? false}
             loading={calls === null && !callsQuery.isError}
             error={callsQuery.isError ? describe(callsQuery.error) : null}
+            open={callsOpen}
+            onToggle={() => setCallsOpen((open) => !open)}
             styles={styles}
             compact={compact}
             narrowColumns={compact || Boolean(narrow)}
@@ -190,12 +212,22 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
     ? `压缩后待更新 · 已用 ${formatTokens(snapshot.contextUsedTokens)}`
     : `${formatTokens(snapshot.contextUsedTokens)}${snapshot.contextWindowTokens ? ` / ${formatTokens(snapshot.contextWindowTokens)}` : ""}`;
   const sessionRate = sessionCacheHitRate(snapshot.totals);
+  const estimated = snapshot.estimatedCost;
 
   return (
     <>
       <View style={styles.cardRow}>
         <StatCard styles={styles} label="总 token" value={formatTokens(snapshot.totalTokens)} detail={groupDigits(snapshot.totalTokens)} />
-        <StatCard styles={styles} label="花费" value={formatCost(snapshot.totals.cost)} detail={`压缩 ${snapshot.compactions} 次`} />
+        <StatCard
+          styles={styles}
+          label="花费（官方价）"
+          value={estimated > 0 ? formatCost(estimated) : "—"}
+          detail={
+            estimated > 0
+              ? `官方价估算 · 压缩 ${snapshot.compactions} 次`
+              : `模型未收录价表 · 压缩 ${snapshot.compactions} 次`
+          }
+        />
         <StatCard
           styles={styles}
           label="上下文"
@@ -229,6 +261,12 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
           value={sessionRate === null ? "—" : `${sessionRate.toFixed(1)}%`}
           detail="ΣcacheRead / Σprompt tokens"
         />
+        <Row
+          styles={styles}
+          label="花费 · Pi 记账"
+          value={formatCost(snapshot.totals.cost)}
+          detail="会话文件 cost 字段，relay 渠道常为 0"
+        />
       </View>
 
       <View style={styles.section}>
@@ -239,7 +277,7 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
           value={snapshot.model ?? "—"}
           detail={snapshot.thinkingLevel ? `thinking ${snapshot.thinkingLevel}` : undefined}
         />
-        <Row styles={styles} label="LLM 调用" value={groupDigits(snapshot.calls)} detail={`用户轮次 ${groupDigits(snapshot.userTurns)}`} />
+        <Row styles={styles} label="LLM 调用" value={groupDigits(snapshot.callCount)} detail={`用户轮次 ${groupDigits(snapshot.userTurns)}`} />
         <Row styles={styles} label="开始" value={formatTime(snapshot.startedAt)} detail={`最后活动 ${formatTime(snapshot.lastActivityAt)}`} />
         {snapshot.sessionId ? <Row styles={styles} label="Session" value={snapshot.sessionId} /> : null}
       </View>
@@ -250,10 +288,17 @@ function SnapshotBody({ snapshot, styles, colors }: { snapshot: UsageSnapshot; s
 function PerModelList({ items, styles }: { items: ModelUsage[]; styles: Styles }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>按模型拆分</Text>
+      <Text style={styles.sectionTitle}>按模型拆分（官方 API 价）</Text>
       {items.map((item) => (
-        <Row key={item.key} styles={styles} label={item.key} value={formatTokens(item.tokens)} detail={formatCost(item.cost)} />
+        <Row
+          key={item.key}
+          styles={styles}
+          label={item.key}
+          value={formatTokens(item.tokens)}
+          detail={`${formatCost(item.estimated)}${item.cost > 0 ? ` · 记账 ${formatCost(item.cost)}` : ""}`}
+        />
       ))}
+      <Text style={styles.muted}>价格内置于插件 shared/pricing.ts（USD / 1M tokens），未收录模型记 $0。</Text>
     </View>
   );
 }
@@ -263,6 +308,8 @@ function CallsTable({
   truncated,
   loading,
   error,
+  open,
+  onToggle,
   styles,
   compact,
   narrowColumns,
@@ -271,31 +318,47 @@ function CallsTable({
   truncated: boolean;
   loading: boolean;
   error: string | null;
+  open: boolean;
+  onToggle(): void;
   styles: Styles;
   compact: boolean;
   narrowColumns: boolean;
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>最近 {CALL_LIMIT} 次 LLM 调用（新→旧）</Text>
-      {error ? <Text style={styles.muted}>读取失败：{error}</Text> : null}
-      {loading ? <Text style={styles.muted}>正在读取…</Text> : null}
-      {!loading && !error && calls.length === 0 ? <Text style={styles.muted}>还没有带 usage 的调用。</Text> : null}
-      {calls.map((call) => (
-        <View key={`${call.index}-${call.at ?? ""}`} style={styles.callRow}>
-          <Text style={styles.callIndex}>#{call.index}</Text>
-          <Text style={styles.callTime}>{formatTime(call.at)}</Text>
-          <Text style={styles.callModel} numberOfLines={1}>
-            {call.model}
-          </Text>
-          <Text style={styles.callNumber}>↑{formatTokens(call.input)}</Text>
-          <Text style={styles.callNumber}>↓{formatTokens(call.output)}</Text>
-          {narrowColumns ? null : <Text style={styles.callNumber}>R{formatTokens(call.cacheRead)}</Text>}
-          <Text style={styles.callNumber}>{formatCost(call.cost)}</Text>
-          {narrowColumns ? null : <Text style={styles.callNumber}>{formatTokens(call.contextTokens)} ctx</Text>}
-        </View>
-      ))}
-      {truncated ? <Text style={styles.muted}>更早的调用已从内存中丢弃，累计总量仍然包含它们。</Text> : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={open ? "收起最近 40 次 LLM 调用" : "展开最近 40 次 LLM 调用"}
+        onPress={onToggle}
+        style={styles.sectionHeader}
+      >
+        <Text style={styles.chevron}>{open ? "▾" : "▸"}</Text>
+        <Text style={styles.sectionTitle}>最近 {CALL_LIMIT} 次 LLM 调用（新→旧）</Text>
+      </Pressable>
+      {!open ? null : (
+        <>
+          {error ? <Text style={styles.muted}>读取失败：{error}</Text> : null}
+          {loading ? <Text style={styles.muted}>正在读取…</Text> : null}
+          {!loading && !error && calls.length === 0 ? <Text style={styles.muted}>还没有带 usage 的调用。</Text> : null}
+        </>
+      )}
+      {open
+        ? calls.map((call) => (
+            <View key={`${call.index}-${call.at ?? ""}`} style={styles.callRow}>
+              <Text style={styles.callIndex}>{`#${call.index}`}</Text>
+              <Text style={styles.callTime}>{formatTime(call.at)}</Text>
+              <Text style={styles.callModel} numberOfLines={1}>
+                {call.model}
+              </Text>
+              <Text style={styles.callNumber}>↑{formatTokens(call.input)}</Text>
+              <Text style={styles.callNumber}>↓{formatTokens(call.output)}</Text>
+              {narrowColumns ? null : <Text style={styles.callNumber}>R{formatTokens(call.cacheRead)}</Text>}
+              <Text style={styles.callNumber}>{formatCost(call.estimated || call.cost)}</Text>
+              {narrowColumns ? null : <Text style={styles.callNumber}>{formatTokens(call.contextTokens)} ctx</Text>}
+            </View>
+          ))
+        : null}
+      {open && truncated ? <Text style={styles.muted}>更早的调用已从内存中丢弃，累计总量仍然包含它们。</Text> : null}
     </View>
   );
 }
@@ -352,7 +415,9 @@ function Row({ styles, label, value, detail }: { styles: Styles; label: string; 
 
 function createStyles(colors: ThemeColors, compact: boolean) {
   return {
-    screen: { flex: 1, backgroundColor: colors.surface0 },
+    // Dark themes already sit on the host popover surface; a second background
+    // layer reads as an inset box, so go transparent there.
+    screen: { flex: 1, backgroundColor: isDarkColor(colors.surface0) ? "transparent" : colors.surface0 },
     content: { padding: compact ? 16 : 20, gap: compact ? 12 : 16 },
     headerRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
     headerText: { flex: 1, gap: 2 },
@@ -378,6 +443,8 @@ function createStyles(colors: ThemeColors, compact: boolean) {
     cardBarTrack: { height: 4, borderRadius: 2, backgroundColor: colors.surface2, overflow: "hidden" as const, marginTop: 6 },
     cardBarFill: { height: 4, borderRadius: 2 },
     section: { gap: 6, paddingTop: 4 },
+    sectionHeader: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    chevron: { color: colors.foregroundMuted, fontSize: 12, width: 12 },
     sectionTitle: { color: colors.foreground, fontSize: 13, fontWeight: "600" as const, marginBottom: 2 },
     row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12 },
     rowLabel: { color: colors.foregroundMuted, fontSize: 13, width: compact ? 96 : 132 },

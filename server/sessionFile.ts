@@ -1,5 +1,9 @@
 import { open, stat } from "node:fs/promises";
 import { emptyUsageTotals, type UsageTotals } from "../shared/format";
+import { estimateCostForModel } from "../shared/pricing";
+// Types only: the wire schemas in shared/usage.ts are the single source of truth
+// for these shapes, so the reader cannot drift from what the client receives.
+import type { CallUsage, ModelUsage } from "../shared/usage";
 
 /**
  * Incremental reader for one Pi session JSONL file.
@@ -11,28 +15,6 @@ import { emptyUsageTotals, type UsageTotals } from "../shared/format";
  * newest usable assistant message and stay unknown right after a compaction.
  */
 
-export interface CallUsage {
-  index: number;
-  at: string | null;
-  provider: string;
-  model: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  reasoning: number;
-  cost: number;
-  totalTokens: number;
-  contextTokens: number;
-  stopReason: string | null;
-}
-
-export interface ModelUsage {
-  key: string;
-  tokens: number;
-  cost: number;
-}
-
 export interface SessionAggregate {
   sessionId: string | null;
   cwd: string | null;
@@ -42,8 +24,11 @@ export interface SessionAggregate {
   provider: string | null;
   thinkingLevel: string | null;
   totals: UsageTotals;
+  /** Session-wide cost at official API list prices; see shared/pricing.ts. */
+  estimatedCost: number;
   totalTokens: number;
-  calls: number;
+  /** Number of LLM calls; the retained `CallUsage[]` lives on the reader. */
+  callCount: number;
   userTurns: number;
   compactions: number;
   contextUsedTokens: number;
@@ -64,6 +49,27 @@ interface PiUsage {
 const READ_CHUNK_BYTES = 1024 * 1024;
 const MAX_BYTES_PER_REFRESH = 64 * 1024 * 1024;
 const DEFAULT_MAX_CALLS = 400;
+
+function initialAggregate(): SessionAggregate {
+  return {
+    sessionId: null,
+    cwd: null,
+    startedAt: null,
+    lastActivityAt: null,
+    model: null,
+    provider: null,
+    thinkingLevel: null,
+    totals: emptyUsageTotals(),
+    estimatedCost: 0,
+    totalTokens: 0,
+    callCount: 0,
+    userTurns: 0,
+    compactions: 0,
+    contextUsedTokens: 0,
+    contextStale: false,
+    cacheHitRate: null,
+  };
+}
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -111,24 +117,8 @@ export class PiSessionFileReader {
   private truncated = false;
   private bytes = 0;
   private callList: CallUsage[] = [];
-  private perModel = new Map<string, { tokens: number; cost: number }>();
-  private aggregate: SessionAggregate = {
-    sessionId: null,
-    cwd: null,
-    startedAt: null,
-    lastActivityAt: null,
-    model: null,
-    provider: null,
-    thinkingLevel: null,
-    totals: emptyUsageTotals(),
-    totalTokens: 0,
-    calls: 0,
-    userTurns: 0,
-    compactions: 0,
-    contextUsedTokens: 0,
-    contextStale: false,
-    cacheHitRate: null,
-  };
+  private perModel = new Map<string, { tokens: number; cost: number; estimated: number }>();
+  private aggregate: SessionAggregate = initialAggregate();
 
   constructor(path: string, options?: { maxCalls?: number }) {
     this.path = path;
@@ -153,9 +143,14 @@ export class PiSessionFileReader {
   }
 
   get models(): ModelUsage[] {
-    return Array.from(this.perModel, ([key, value]) => ({ key, tokens: value.tokens, cost: value.cost }))
-      .filter((entry) => entry.tokens > 0 || entry.cost > 0)
-      .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+    return Array.from(this.perModel, ([key, value]) => ({
+      key,
+      tokens: value.tokens,
+      cost: value.cost,
+      estimated: value.estimated,
+    }))
+      .filter((entry) => entry.tokens > 0 || entry.cost > 0 || entry.estimated > 0)
+      .sort((a, b) => b.estimated - a.estimated || b.cost - a.cost || b.tokens - a.tokens);
   }
 
   /** Reads only the bytes appended since the previous call. */
@@ -199,23 +194,7 @@ export class PiSessionFileReader {
     this.callList = [];
     this.perModel = new Map();
     this.truncated = false;
-    this.aggregate = {
-      sessionId: null,
-      cwd: null,
-      startedAt: null,
-      lastActivityAt: null,
-      model: null,
-      provider: null,
-      thinkingLevel: null,
-      totals: emptyUsageTotals(),
-      totalTokens: 0,
-      calls: 0,
-      userTurns: 0,
-      compactions: 0,
-      contextUsedTokens: 0,
-      contextStale: false,
-      cacheHitRate: null,
-    };
+    this.aggregate = initialAggregate();
   }
 
   private applyLine(raw: string): void {
@@ -290,9 +269,9 @@ export class PiSessionFileReader {
 
     const stopReason = str(message.stopReason);
     const contextTokens = contextTokensOf(usage);
-    this.aggregate.calls += 1;
+    this.aggregate.callCount += 1;
     this.addUsage(usage, `${provider}/${model}`, {
-      index: this.aggregate.calls,
+      index: this.aggregate.callCount,
       at,
       provider,
       model,
@@ -322,12 +301,24 @@ export class PiSessionFileReader {
     totals.reasoning += num(usage.reasoning);
     totals.cost += costOf(usage);
 
+    // Tool/summary usage carries no model of its own; price it at whatever
+    // model the session is running, like Pi's own per-session cost view.
+    const pricedModel = call ? `${call.provider}/${call.model}` : (this.aggregate.model ?? modelKey);
+    const estimated = estimateCostForModel(pricedModel, {
+      input: num(usage.input),
+      output: num(usage.output),
+      cacheRead: num(usage.cacheRead),
+      cacheWrite: num(usage.cacheWrite),
+    });
+    this.aggregate.estimatedCost += estimated;
+
     const tokens = totalTokensOf(usage);
     this.aggregate.totalTokens += tokens;
 
-    const bucket = this.perModel.get(modelKey) ?? { tokens: 0, cost: 0 };
+    const bucket = this.perModel.get(modelKey) ?? { tokens: 0, cost: 0, estimated: 0 };
     bucket.tokens += tokens;
     bucket.cost += costOf(usage);
+    bucket.estimated += estimated;
     this.perModel.set(modelKey, bucket);
 
     if (!call) return;
@@ -342,6 +333,7 @@ export class PiSessionFileReader {
       cacheWrite: num(usage.cacheWrite),
       reasoning: num(usage.reasoning),
       cost: costOf(usage),
+      estimated,
       totalTokens: tokens,
       contextTokens: call.contextTokens,
       stopReason: call.stopReason,

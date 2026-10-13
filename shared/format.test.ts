@@ -59,10 +59,28 @@ describe("buildPillTooltip", () => {
     );
   });
 
-  it("stays generic when the session is not readable", () => {
-    expect(buildPillTooltip({ status: "error", totals: emptyUsageTotals(), contextPercent: null })).toBe(
-      "Pi token 用量",
+  it("surfaces the failure reason instead of a generic line", () => {
+    expect(buildPillTooltip({ status: "error", totals: emptyUsageTotals(), contextPercent: null, error: "EACCES" })).toBe(
+      "Pi token 用量 · 读取失败：EACCES",
     );
+    expect(buildPillTooltip({ status: "error", totals: emptyUsageTotals(), contextPercent: null })).toBe(
+      "Pi token 用量 · 读取失败",
+    );
+  });
+
+  it("names the provider that has no Pi usage and the missing session", () => {
+    expect(
+      buildPillTooltip({ status: "not_pi", totals: emptyUsageTotals(), contextPercent: null, provider: "codex" }),
+    ).toBe("Pi token 用量 · 当前代理使用 codex provider，不统计 Pi 用量");
+    expect(buildPillTooltip({ status: "no_session", totals: emptyUsageTotals(), contextPercent: null })).toBe(
+      "Pi token 用量 · 暂无活动会话",
+    );
+  });
+
+  it("explains a momentarily unknown context after a compaction", () => {
+    expect(
+      buildPillTooltip({ status: "ok", totals, contextPercent: null, contextStale: true }),
+    ).toContain("上下文刷新中…");
   });
 });
 

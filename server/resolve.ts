@@ -90,6 +90,8 @@ export class PiSessionResolver {
   private readonly agentDir: string | undefined;
   private readonly now: () => number;
   private configLoadedAt: number | null = null;
+  /** In-flight model-config read, shared so concurrent resolves coalesce onto one. */
+  private configLoad: Promise<void> | null = null;
 
   constructor(options?: { agentDir?: string; now?: () => number }) {
     this.agentDir = options?.agentDir;
@@ -178,10 +180,21 @@ export class PiSessionResolver {
   /** Reads `~/.pi/agent/models.json` + `models-store.json`, where custom providers declare their window. */
   private async contextWindowFromPiConfig(provider: string, model: string | null): Promise<number | null> {
     if (!model) return null;
-    const now = this.now();
-    if (this.configLoadedAt === null || now - this.configLoadedAt > CONFIG_TTL_MS) {
-      await this.loadPiConfig();
-      this.configLoadedAt = now;
+    if (this.configLoadedAt === null || this.now() - this.configLoadedAt > CONFIG_TTL_MS) {
+      // A cold batch resolves up to CONCURRENCY agents at once, so fan their
+      // config reads onto a single load; the TTL clock starts once it finishes.
+      if (!this.configLoad) {
+        this.configLoad = this.loadPiConfig()
+          .catch(() => {
+            // An unreadable config just means no window from disk; the TTL below
+            // gates the retry so a broken file is not re-read on every poll.
+          })
+          .finally(() => {
+            this.configLoadedAt = this.now();
+            this.configLoad = null;
+          });
+      }
+      await this.configLoad;
     }
     const wanted = model.includes("/") ? model : `${provider}/${model}`;
     return this.configWindows.get(wanted) ?? this.configWindows.get(`${provider}/${model.slice(model.indexOf("/") + 1)}`) ?? null;

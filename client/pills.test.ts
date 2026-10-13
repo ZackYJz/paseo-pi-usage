@@ -51,8 +51,9 @@ function snapshotFor(agentId: string, totalTokens: number) {
     sessionId: "s1",
     sessionFile: "/tmp/s1.jsonl",
     totals: { input: 12_300, output: 4500, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0 },
+    estimatedCost: 0,
     totalTokens,
-    calls: 3,
+    callCount: 3,
     userTurns: 1,
     compactions: 0,
     contextUsedTokens: 0,
@@ -151,6 +152,8 @@ describe("startUsagePills", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect([...context.pills.keys()]).toEqual(["pi-1"]);
+    // No cache reads yet, so the hit rate is a real 0% — the tooltip spells it out
+    // while the label drops it (see buildPillLabel's `rate > 0` guard).
     expect(context.pills.get("pi-1")?.title).toBe("Pi token 用量 · ↑12k ↓4.5k 缓存命中 0.0%");
 
     stop();

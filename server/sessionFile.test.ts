@@ -90,7 +90,10 @@ describe("PiSessionFileReader", () => {
     expect(totals.reasoning).toBe(98 + 50);
     expect(totals.cost).toBeCloseTo(0.01 + 0.002 + 0.02 + 0.003, 10);
 
-    expect(reader.snapshot.calls).toBe(2);
+    // Official-price estimate: qwen3.8-max is 2/6/0.25/2.5 per 1M tokens.
+    expect(reader.snapshot.estimatedCost).toBeCloseTo(0.008876 + 0.0092125 + 0.00014, 10);
+
+    expect(reader.snapshot.callCount).toBe(2);
     expect(reader.snapshot.userTurns).toBe(1);
     expect(reader.snapshot.compactions).toBe(1);
     expect(reader.snapshot.sessionId).toBe("01a08f7c-db66-7074-883f-fa168c7aea83");
@@ -107,6 +110,8 @@ describe("PiSessionFileReader", () => {
     expect(models.find((entry) => entry.key === "aliyun/qwen3.8-max")?.tokens).toBe(972 + 174 + 23552 + 1000 + 200 + 24000 + 5);
     expect(models.find((entry) => entry.key === "Tools/summaries")?.tokens).toBe(10 + 20);
     expect(models.find((entry) => entry.key === "Tools/summaries")?.cost).toBeCloseTo(0.005, 10);
+    expect(models.find((entry) => entry.key === "aliyun/qwen3.8-max")?.estimated).toBeCloseTo(0.008876 + 0.0092125, 10);
+    expect(models.find((entry) => entry.key === "Tools/summaries")?.estimated).toBeCloseTo(0.00014, 10);
   });
 
   it("derives context size and cache hit rate from the newest usable assistant message", async () => {
@@ -123,7 +128,7 @@ describe("PiSessionFileReader", () => {
     expect(reader.snapshot.contextUsedTokens).toBe(200 + 80 + 1800);
     expect(reader.snapshot.contextStale).toBe(false);
     expect(reader.snapshot.cacheHitRate).toBeCloseTo((1800 / 2000) * 100, 10);
-    expect(reader.snapshot.calls).toBe(3);
+    expect(reader.snapshot.callCount).toBe(3);
   });
 
   it("counts appended lines exactly once across refreshes", async () => {
@@ -134,12 +139,12 @@ describe("PiSessionFileReader", () => {
 
     await reader.refresh();
     expect(reader.snapshot.totalTokens).toBe(115);
-    expect(reader.snapshot.calls).toBe(1);
+    expect(reader.snapshot.callCount).toBe(1);
 
     await appendFile(path, assistant("m", "p", usage(20, 7, 200, 0, 0, 0.02)) + "\n", "utf8");
     await reader.refresh();
 
-    expect(reader.snapshot.calls).toBe(2);
+    expect(reader.snapshot.callCount).toBe(2);
     expect(reader.snapshot.totalTokens).toBe(115 + 227);
     expect(reader.snapshot.totals.cost).toBeCloseTo(0.03, 10);
   });
@@ -151,12 +156,12 @@ describe("PiSessionFileReader", () => {
 
     const reader = new PiSessionFileReader(path);
     await reader.refresh();
-    expect(reader.snapshot.calls).toBe(0);
+    expect(reader.snapshot.callCount).toBe(0);
 
     await appendFile(path, line.slice(40) + "\n", "utf8");
     await reader.refresh();
 
-    expect(reader.snapshot.calls).toBe(1);
+    expect(reader.snapshot.callCount).toBe(1);
     expect(reader.snapshot.totalTokens).toBe(115);
   });
 
@@ -185,12 +190,12 @@ describe("PiSessionFileReader", () => {
     const path = await makeSessionFile([header, assistant("m", "p", usage(10, 5, 100, 0, 0, 0.01))]);
     const reader = new PiSessionFileReader(path);
     await reader.refresh();
-    expect(reader.snapshot.calls).toBe(1);
+    expect(reader.snapshot.callCount).toBe(1);
 
     await writeFile(path, header + "\n", "utf8");
     await reader.refresh();
 
-    expect(reader.snapshot.calls).toBe(0);
+    expect(reader.snapshot.callCount).toBe(0);
     expect(reader.snapshot.totalTokens).toBe(0);
     expect(reader.snapshot.sessionId).toBe("01a08f7c-db66-7074-883f-fa168c7aea83");
   });
@@ -205,7 +210,7 @@ describe("PiSessionFileReader", () => {
     const reader = new PiSessionFileReader(path, { maxCalls: 5 });
     await reader.refresh();
 
-    expect(reader.snapshot.calls).toBe(12);
+    expect(reader.snapshot.callCount).toBe(12);
     expect(reader.calls).toHaveLength(5);
     expect(reader.calls.map((call) => call.index)).toEqual([8, 9, 10, 11, 12]);
     expect(reader.isTruncated).toBe(true);
@@ -215,6 +220,6 @@ describe("PiSessionFileReader", () => {
     const path = await makeSessionFile([header, "{not json", assistant("m", "p", usage(10, 5, 0, 0, 0, 0))]);
     const reader = new PiSessionFileReader(path);
     await reader.refresh();
-    expect(reader.snapshot.calls).toBe(1);
+    expect(reader.snapshot.callCount).toBe(1);
   });
 });

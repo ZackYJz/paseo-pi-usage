@@ -15,6 +15,7 @@ export const callUsageSchema = z.object({
   cacheWrite: z.number(),
   reasoning: z.number(),
   cost: z.number(),
+  estimated: z.number(),
   totalTokens: z.number(),
   contextTokens: z.number(),
   stopReason: z.string().nullable(),
@@ -24,6 +25,7 @@ export const modelUsageSchema = z.object({
   key: z.string(),
   tokens: z.number(),
   cost: z.number(),
+  estimated: z.number(),
 });
 
 export const usageStatusSchema = z.enum(["ok", "no_session", "not_pi", "error"]);
@@ -45,8 +47,11 @@ export const usageSnapshotSchema = z.object({
     reasoning: z.number(),
     cost: z.number(),
   }),
+  /** Session cost at official API list prices; see shared/pricing.ts. */
+  estimatedCost: z.number(),
   totalTokens: z.number(),
-  calls: z.number(),
+  /** Number of LLM calls, not the call list; see `piUsageCallsRpc`. */
+  callCount: z.number(),
   userTurns: z.number(),
   compactions: z.number(),
   contextUsedTokens: z.number(),

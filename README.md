@@ -6,13 +6,14 @@
 
 - **Composer pill**：每个 Pi agent 的输入框轨道栏上一个 pill（Gauge 图标），label 实时刷新为 `↑485k ↓113k 97%`，依次是输入、输出、全会话缓存命中率，有花费时在末尾追加。上下文占用不放 pill，在弹窗里看。
 - **点击 pill 打开弹窗（popover）**：整个 token 视图以弹窗形式锚定在 pill 上，头部有刷新与「关闭」按钮。popover 是 SDK 里唯一自带 `close()` 的表面，所以关闭是真正的消失，点弹窗外部也会关。副标题显示会话标题，带「会话：」前缀。弹窗内为窄列布局：
-  - 总 token、花费
+  - 总 token、花费（官方价）、上下文三张卡片
   - 上下文进度条，>70% 黄、>90% 红，与 Pi 同阈值
-  - token 明细：总 token 合计公式 = ↑输入+↓输出+R缓存读+W缓存写；输入、输出、缓存读、缓存写、思考；命中率·最近调用，命中率·全会话 ΣcacheRead/Σprompt
+  - token 明细：总 token 合计公式 = ↑输入+↓输出+R缓存读+W缓存写；输入、输出、缓存读、缓存写、思考；命中率·最近调用，命中率·全会话 ΣcacheRead/Σprompt；花费·Pi 记账
   - 会话信息：模型、thinking level、LLM 调用数、用户轮次、压缩次数、开始与最后活动时间、session id
-  - 按模型拆分的 token 与花费
-  - 最近 40 次 LLM 调用逐条明细，窄列下隐藏 R/ctx 列
+  - 按模型拆分的 token 与官方价估算（记账花费非 0 时并列显示）
+  - 最近 40 次 LLM 调用逐条明细，**默认折叠**，点标题展开；窄列下隐藏 R/ctx 列
   - session 文件路径与大小
+- 暗色主题下弹窗不再铺自己的底色（宿主 popover 已有表面，多一层会像个内嵌方块）；亮色主题保留。SDK 的 theme 只给 colors 不给 light/dark，用 surface0 亮度判断。
 
 ## 数据来源
 
@@ -30,6 +31,16 @@
 - `formatTokens` 直接照搬 Pi footer 的分档：<1k 原样、<10k 一位小数 k、<1M 整数 k、<10M 一位小数 M、否则整数 M。
 
 因为读的是 Pi 的 session 文件，**历史轮次也算在内**，包括插件安装之前的部分。
+
+## 官方价花费估算
+
+relay/订阅渠道写进会话文件的 `usage.cost` 常为 0，看不到钱。插件内置了一份官方 API 价表 `shared/pricing.ts`（USD / 1M tokens，input / output / cacheRead / cacheWrite），服务端解析 session 时逐条调用估算并汇总：
+
+- 卡片「花费（官方价）」= 全会话估算；明细里「花费 · Pi 记账」保留会话文件原值；按模型拆分与调用明细列也用估算价。
+- 价表来源（2026-09-28 调研）：Anthropic / OpenAI / xAI / Z.ai / Google / Moonshot 官方价页，并与 Pi 内置的第一方模型目录（pi-ai `providers/*.json`）交叉核对；DeepSeek 用 api-docs 的 peak 价（off-peak 减半），Qwen3.8-Max 用阿里云 Model Studio 列表价。
+- 思考 token 不单独计价：各厂商都把 thinking 计进 output，Pi 的 `usage.reasoning` 是 `usage.output` 的子集。
+- 模型名按 `PRICE_RULES` 归一（relay 改名如 `apimart-5.6-sol`、`claude-opus-5-thinking`、`anthropic/claude-opus-5.5` 都能命中）；未收录模型估 $0 并在弹窗里注明。
+- 改价只需编辑 `shared/pricing.ts`，单测在 `shared/pricing.test.ts`。
 
 ## 刷新策略
 
@@ -59,5 +70,6 @@ paseo plugin reload paseo-pi-usage   # 改完源码后必须 reload，不要重�
 
 - 只统计 `provider === "pi"` 的 agent。其它 provider 的 pill 不会出现，弹窗会说明原因。
 - Pi 的 session 文件是追加写的树结构，本插件按文件线性顺序聚合，这与 Pi footer 的累计口径相同。会话被 rewind 或分叉后，分支上的重复条目会像 Pi 一样被一并计入。
-- 花费不是本插件算的。Pi 在每次调用时按模型单价（input/output/cacheRead/cacheWrite 每百万 token，含 tiers）算出 `usage.cost` 写进会话 JSONL，我们只求和。单价来自 `~/.pi/agent/models-store.json`（provider 拉取），可在 `~/.pi/agent/models.json` 按模型覆盖。无单价的模型（订阅、分销渠道）cost 为 0，pill 不显示 `$`。
+- Pi 记账花费不是本插件算的：Pi 在每次调用时按模型单价算出 `usage.cost` 写进会话 JSONL，我们只求和；无单价的模型（订阅、分销渠道）cost 为 0，pill 不显示 `$`。弹窗里的「花费（官方价）」是插件按 `shared/pricing.ts` 价表的估算值，不含厂商 tiers/折扣（如 GPT-5.6 Sol 的 >272k 高价档、DeepSeek off-peak 半价），与真实账单会有出入。
+- 价表是静态快照，厂商调价后需要手动更新 `shared/pricing.ts`。
 - 上下文窗口大小来自 Paseo 的 `lastUsage.contextWindowMaxTokens`，缺失时回退到 `providers.listModels`，两者都拿不到就显示 `?`。
