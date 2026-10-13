@@ -1,5 +1,6 @@
 {
   "id": "paseo-pi-usage",
+  "description": "在 Pi agent 的输入框上显示整个会话的累计 token、缓存命中率和按官方价估算的花费，点开看上下文占用和逐次调用明细",
   "requirements": {
     "paseo": ">=0.8.0"
   }
