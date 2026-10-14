@@ -1,75 +1,57 @@
-# paseo-pi-usage
+# Pi 用量（paseo-pi-usage）
 
-在 Paseo 里看到 Pi 会话的累计 token 用量、花费和上下文占用，也就是 Pi TUI 状态栏（footer）那一行信息。Paseo 原生只在 agent 快照里暴露 `lastUsage`（单轮），所以整个会话的总量看不到。
+Paseo 插件，在 Pi 会话的输入框上显示整个会话用了多少 token、花了多少钱，点开能看上下文都被什么占着。相当于 Pi 终端底部状态栏那一行，搬到了 Paseo 里。
 
-## 展示形式
+![Pi 用量弹窗，示例会话](docs/screenshots/usage-popover.png)
 
-- **Composer pill**：每个 Pi agent 的输入框轨道栏上一个 pill（Gauge 图标），label 实时刷新为 `↑485k ↓113k 97%`，依次是输入、输出、全会话缓存命中率，有花费时在末尾追加。上下文占用不放 pill，在弹窗里看。
-- **点击 pill 打开弹窗（popover）**：整个 token 视图以弹窗形式锚定在 pill 上，头部有刷新与「关闭」按钮。popover 是 SDK 里唯一自带 `close()` 的表面，所以关闭是真正的消失，点弹窗外部也会关。副标题显示会话标题，带「会话：」前缀。弹窗内为窄列布局：
-  - 总 token、花费（官方价）、上下文三张卡片
-  - 上下文进度条，>70% 黄、>90% 红，与 Pi 同阈值
-  - token 明细：总 token 合计公式 = ↑输入+↓输出+R缓存读+W缓存写；输入、输出、缓存读、缓存写、思考；命中率·最近调用，命中率·全会话 ΣcacheRead/Σprompt；花费·Pi 记账
-  - 会话信息：模型、thinking level、LLM 调用数、用户轮次、压缩次数、开始与最后活动时间、session id
-  - 按模型拆分的 token 与官方价估算（记账花费非 0 时并列显示）
-  - 最近 40 次 LLM 调用逐条明细，**默认折叠**，点标题展开；窄列下隐藏 R/ctx 列
-  - session 文件路径与大小
-- 暗色主题下弹窗不再铺自己的底色（宿主 popover 已有表面，多一层会像个内嵌方块）；亮色主题保留。SDK 的 theme 只给 colors 不给 light/dark，用 surface0 亮度判断。
+截图来自一个示例项目的会话，不含真实数据。
 
-## 数据来源
+## 怎么用
 
-1. `paseo.agents.ref(agentId).refresh()` → `persistence.nativeHandle` 就是 Pi session JSONL 的绝对路径（Paseo 自己记录的），并顺带拿到 `lastUsage.contextWindowMaxTokens` 与模型。
-2. 回退方案：按 Pi 的编码规则 `--<cwd 把 / \ : 换成 ->--` 在 `~/.pi/agent/sessions/`（或 `PI_CODING_AGENT_SESSION_DIR` / `PI_CODING_AGENT_DIR`）下按 `*_<sessionId>.jsonl` 查找。
-3. 增量解析该 JSONL：只读上次之后新增的字节，按行聚合。
+**输入框上的小标签**：每个 Pi agent 的输入框上方多一个标签，例如 `1.7M · $0.061`，表示整个会话的总 token 和花费，实时更新。鼠标悬停能看到输入、输出、缓存读的拆分和缓存命中率。
 
-统计口径逐条对齐 Pi 自身实现（`core/usage-totals.js` + `modes/interactive/components/footer.js`）：
+**点开的弹窗**（窄屏上是底部弹层），从上到下：
 
-- 累计范围 = 所有 assistant 消息 + 带 usage 的 toolResult + `compaction` / `branch_summary` 条目。
-- 上下文 token = `usage.totalTokens || input + output + cacheRead + cacheWrite`（Pi 的 `calculateContextTokens`）。
-- 压缩之后、下一次有效 assistant usage 之前，上下文显示为 `?`（`contextStale`），与 Pi 一致。
-- `aborted` / `error` / 全零 usage 的 assistant 消息不参与上下文推导，但计入累计总量。Pi 也是如此。
-- 按模型拆分时 assistant 归到 `provider/model`，其余归到 `Tools/summaries`（Pi 的 `getUsageCostBreakdown`）。
-- `formatTokens` 直接照搬 Pi footer 的分档：<1k 原样、<10k 一位小数 k、<1M 整数 k、<10M 一位小数 M、否则整数 M。
+- 会话标题、模型、thinking 等级，右上角刷新。
+- 上下文：已用 / 窗口大小和百分比，彩色进度条按类别分段。下面列出各类占了多少：消息、工具调用（附占用最多的几个工具）、思考、MCP 工具、系统工具、Skills、项目指令、系统提示词。再下面是最近 40 次调用的上下文走势小图，能看出什么时候压缩过。
+- 三个关键数：花费、总 token（调用次数与轮次）、缓存命中率。
+- 本轮：最新一条用户消息之后的输入、输出、缓存读、调用次数和花费。
+- 可展开：Token 明细、按模型拆分（用过不止一个模型时出现）、最近调用逐条明细。
+- 页脚：会话文件路径和大小。
 
-因为读的是 Pi 的 session 文件，**历史轮次也算在内**，包括插件安装之前的部分。
+## 数字怎么来的
 
-## 官方价花费估算
-
-relay/订阅渠道写进会话文件的 `usage.cost` 常为 0，看不到钱。插件内置了一份官方 API 价表 `shared/pricing.ts`（USD / 1M tokens，input / output / cacheRead / cacheWrite），服务端解析 session 时逐条调用估算并汇总：
-
-- 卡片「花费（官方价）」= 全会话估算；明细里「花费 · Pi 记账」保留会话文件原值；按模型拆分与调用明细列也用估算价。
-- 价表来源（2026-09-28 调研）：Anthropic / OpenAI / xAI / Z.ai / Google / Moonshot 官方价页，并与 Pi 内置的第一方模型目录（pi-ai `providers/*.json`）交叉核对；DeepSeek 用 api-docs 的 peak 价（off-peak 减半），Qwen3.8-Max 用阿里云 Model Studio 列表价。
-- 思考 token 不单独计价：各厂商都把 thinking 计进 output，Pi 的 `usage.reasoning` 是 `usage.output` 的子集。
-- 模型名按 `PRICE_RULES` 归一（relay 改名如 `apimart-5.6-sol`、`claude-opus-5-thinking`、`anthropic/claude-opus-5.5` 都能命中）；未收录模型估 $0 并在弹窗里注明。
-- 改价只需编辑 `shared/pricing.ts`，单测在 `shared/pricing.test.ts`。
-
-## 刷新策略
-
-- pill：客户端每 2.5s 一次批量 RPC（`pi-usage.snapshot`，单批最多 40 个 agent）。运行中或 2 分钟内活跃过的 agent 每轮都刷新；安静的 agent 只在 Paseo 报告 status / lastActivityAt 变化时才重新读取，避免空转。
-- 弹窗：运行中 2s、空闲 10s，另有「刷新」按钮。
-- 服务端：`persistence` 解析结果缓存 120s，未找到 session 时只缓存 4s，因此新会话第一轮消息后就能显示。每个 session 文件只读增量，reader 数量上限 200（LRU），调用明细在内存中保留最近 400 条，累计总量不受影响。
-
-## 开发与验证
-
-```bash
-npm install
-npm run test        # vitest：解析器、resolver、格式化
-npm run typecheck
-paseo plugin install /absolute/path/to/paseo-pi-usage
-paseo plugin ls     # 需要 running
-paseo plugin logs paseo-pi-usage
-paseo plugin reload paseo-pi-usage   # 改完源码后必须 reload，不要重启 daemon
-```
-
-已做过的验证：
-
-- 用 Pi 自己的 `dist/core/usage-totals.js` 作为独立 oracle，对 5 个真实 session 文件逐字段比对 input / output / cacheRead / cacheWrite / cost，全部一致。最大的一个文件是 2.3MB、474 次调用、6160 万 token。
-- 用真实的 Paseo agent 记录跑通 `resolve → 增量解析 → snapshot/calls` 全链路。
-- 解析器单测覆盖：跨 refresh 不重复计数、半行（含 UTF-8 多字节被切断）缓冲、文件被截断后重置、坏行跳过、调用列表上限。
+- 读的是 Pi 自己的会话文件（`~/.pi/agent/sessions/` 下的 JSONL），所以插件安装之前的历史也算在内。只读新增的部分，不会反复全量解析。
+- 累计口径和 Pi 状态栏一致：所有模型调用、带用量的工具结果、压缩和分支摘要都算。压缩之后、下一次调用之前，上下文显示为 `?`，和 Pi 一样。
+- **花费**：中转和订阅渠道写进会话文件的花费常常是 0。插件内置一份官方 API 价表（`shared/pricing.ts`），模型在表里就按官方价估算，不在就用 Pi 记账的值。小标签和弹窗用同一个口径。估算不含阶梯价和折扣，会和真实账单有出入。
+- **上下文构成**：Pi 1.2 起会把系统提示词和工具声明写进会话文件，插件据此按类别估算（字符数 / 4，中日韩字符 1 字 1 token），再对齐最近一次请求的真实用量。Pi 1.2 之前的会话只显示总进度条，没有构成。
 
 ## 限制
 
-- 只统计 `provider === "pi"` 的 agent。其它 provider 的 pill 不会出现，弹窗会说明原因。
-- Pi 的 session 文件是追加写的树结构，本插件按文件线性顺序聚合，这与 Pi footer 的累计口径相同。会话被 rewind 或分叉后，分支上的重复条目会像 Pi 一样被一并计入。
-- Pi 记账花费不是本插件算的：Pi 在每次调用时按模型单价算出 `usage.cost` 写进会话 JSONL，我们只求和；无单价的模型（订阅、分销渠道）cost 为 0，pill 不显示 `$`。弹窗里的「花费（官方价）」是插件按 `shared/pricing.ts` 价表的估算值，不含厂商 tiers/折扣（如 GPT-5.6 Sol 的 >272k 高价档、DeepSeek off-peak 半价），与真实账单会有出入。
-- 价表是静态快照，厂商调价后需要手动更新 `shared/pricing.ts`。
-- 上下文窗口大小来自 Paseo 的 `lastUsage.contextWindowMaxTokens`，缺失时回退到 `providers.listModels`，两者都拿不到就显示 `?`。
+- 只统计 provider 为 `pi` 的 agent。
+- 会话被回退或分叉后，分支上的重复记录会像 Pi 一样一并计入。
+- 价表是静态的，厂商调价后需要手动改 `shared/pricing.ts`。未收录的模型估为 $0，弹窗里会注明。
+- 上下文窗口大小取自 Paseo 记录的值，拿不到时读 Pi 的模型配置，再拿不到就显示 `?`。
+
+## 开发
+
+```bash
+npm install
+npm run test
+npm run typecheck
+paseo plugin install /absolute/path/to/paseo-pi-usage
+paseo plugin ls
+```
+
+改完源码先测试和类型检查，再 `paseo plugin reload paseo-pi-usage`，不需要重启 daemon。异常时看 `paseo plugin logs paseo-pi-usage`。
+
+```text
+client/pills.ts          输入框标签：每 2.5 秒批量刷新，安静的 agent 只在状态变化时重读
+client/panel.tsx         弹窗
+server/usageService.ts   定位会话文件、汇总快照和弹窗数据
+server/sessionFile.ts    增量解析会话 JSONL
+server/contextLedger.ts  回放系统提示词与工具声明，估算上下文构成
+server/resolve.ts        从 Paseo 的 agent 记录找到会话文件和上下文窗口
+shared/pricing.ts        官方价表
+shared/format.ts         数字和花费的格式化
+```
