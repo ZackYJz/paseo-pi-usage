@@ -5,16 +5,17 @@ import type { PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  snapshot: vi.fn(),
-  calls: vi.fn(),
+  detail: vi.fn(),
   close: vi.fn(),
   agent: { status: "idle", title: "统计 token" } as { status: string; title: string } | null,
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
-  useRpc: (rpc: { name: string }) => (rpc.name === "pi-usage.snapshot" ? mocks.snapshot : mocks.calls),
-  useAgent: () => mocks.agent,
+  useRpc: () => mocks.detail,
+  useAgent: (_id: string, select: (agent: { status: string; title: string }) => unknown) => (mocks.agent ? select(mocks.agent) : null),
 }));
+
+vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
 
 vi.mock("react-native", () => ({
   View: "View",
@@ -77,10 +78,9 @@ const okSnapshot: UsageSnapshot = {
   fileBytes: 667_715,
 };
 
-const okCalls = {
-  agentId: "agent-1",
-  status: "ok" as const,
-  error: null,
+const okDetail = {
+  snapshot: okSnapshot,
+  lastTurn: { turn: 3, callCount: 12, input: 4200, output: 1300, cacheRead: 900_000, cacheWrite: 0, cost: 0, estimated: 0.31, startedAt: "2026-09-11T08:30:00.000Z" },
   truncated: true,
   perModel: [
     { key: "aliyun/qwen3.8-max", tokens: 8_000_000, cost: 0.4, estimated: 2.4 },
@@ -89,6 +89,7 @@ const okCalls = {
   calls: [
     {
       index: 79,
+      turn: 3,
       at: "2026-09-11T08:35:26.340Z",
       provider: "aliyun",
       model: "qwen3.8-max",
@@ -104,200 +105,204 @@ const okCalls = {
       stopReason: "toolUse",
     },
   ],
+  context: {
+    total: 167_727,
+    calibrated: true,
+    pendingTokens: 0,
+    categories: [
+      { key: "messages", tokens: 20_000, count: null },
+      { key: "toolCalls", tokens: 110_000, count: null },
+      { key: "thinking", tokens: 0, count: null },
+      { key: "mcp", tokens: 40, count: null },
+      { key: "systemTools", tokens: 14_088, count: 31 },
+      { key: "skills", tokens: 8_862, count: 68 },
+      { key: "projectContext", tokens: 340, count: 1 },
+      { key: "systemPrompt", tokens: 14_397, count: null },
+    ],
+    topTools: [{ name: "bash", tokens: 80_000 }, { name: "read", tokens: 30_000 }],
+  },
 };
 
 let renderer: ReactTestRenderer;
 let queryClient: QueryClient;
 
-function renderPopover(props: PluginButtonContentProps = popoverProps) {
+async function renderPopover(props: PluginButtonContentProps = popoverProps) {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return act(async () => {
+  await act(async () => {
     renderer = create(
       React.createElement(QueryClientProvider, { client: queryClient }, React.createElement(PiUsagePopover, props)),
     );
   });
+  // React's act() thenable does not chain, so settle is awaited separately.
+  await settle();
 }
 
-async function flush() {
-  // react-query notifies through batched micro/macrotasks; hop until the tree settles.
-  for (let i = 0; i < 10; i += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
+/** Let the detail query resolve and re-render before asserting. */
+async function settle() {
+  for (let i = 0; i < 10; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-const visible = () => JSON.stringify(renderer.toJSON());
-
-function expandCalls() {
-  const header = renderer.root.find((node) => node.props?.accessibilityLabel === "展开最近 40 次 LLM 调用");
-  act(() => {
-    header.props.onPress();
+const text = () => JSON.stringify(renderer.toJSON());
+const press = async (label: string) => {
+  await act(async () => {
+    renderer.root.findAll((node) => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!.props.onPress();
   });
-}
+  await settle();
+};
+const withSnapshot = (patch: Partial<UsageSnapshot>) => mocks.detail.mockResolvedValue({ ...okDetail, snapshot: { ...okSnapshot, ...patch } });
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
   mocks.agent = { status: "idle", title: "统计 token" };
-  mocks.snapshot.mockResolvedValue({ readAt: "2026-09-11T08:40:00.000Z", agents: [okSnapshot] });
-  mocks.calls.mockResolvedValue(okCalls);
+  mocks.detail.mockResolvedValue(okDetail);
 });
-
-afterEach(() => {
-  act(() => {
-    renderer?.unmount();
-  });
+afterEach(async () => {
+  await act(async () => renderer?.unmount());
   queryClient?.clear();
 });
 
-test("renders cumulative totals, context and per-call detail", async () => {
+test("leads with context, then cost, total tokens and cache hit rate from one detail request", async () => {
   await renderPopover();
-  await flush();
-
-  const text = visible();
-  expect(text).toContain("\"backgroundColor\":\"#ffffff\""); // light themes keep the surface
-  expect(text).toContain("π Token 用量");
-  // The subtitle is the session title, explicitly labelled so it reads as metadata.
-  expect(text).toContain("会话：统计 token");
-  // Hero numbers.
-  expect(text).toContain("8.2M"); // total tokens
-  expect(text).toContain("8,214,706");
-  expect(text).toContain("$0.421"); // Pi-recorded cost row
-  expect(text).toContain("花费（官方价）");
-  expect(text).toContain("$2.500"); // official-price estimate card
-  expect(text).toContain("64%"); // context percent
-  expect(text).toContain("168k / 262k");
-  // Breakdown rows.
-  expect(text).toContain("R 缓存读");
-  expect(text).toContain("8.0M");
-  expect(text).toContain("✳ 思考");
-  expect(text).toContain("99.6%");
-  expect(text).toContain("命中率 · 全会话");
-  expect(text).toContain("= ↑输入 + ↓输出 + R缓存读 + W缓存写");
-  expect(text).toContain("97.8%"); // ΣcacheRead / Σprompt tokens
-  expect(text).not.toContain("与 Pi 状态栏同口径");
-  // Session facts.
-  expect(text).toContain("aliyun/qwen3.8-max");
-  expect(text).toContain("thinking xhigh");
-  expect(text).toContain("用户轮次 3");
-  expect(text).toContain("压缩 1 次");
-  // Per-model list is visible; the call table stays collapsed by default.
-  expect(text).toContain("Tools/summaries");
-  expect(text).toContain("qwen3.8-max");
-  expect(text).toContain("79");
-  expect(text).not.toContain("#79");
-  expect(text).not.toContain("更早的调用已从内存中丢弃");
-  // Session file.
-  expect(text).toContain("652.1 KB");
-  expect(mocks.snapshot).toHaveBeenCalledWith({ agentIds: ["agent-1"] });
-  expect(mocks.calls).toHaveBeenCalledWith({ agentId: "agent-1", limit: 40 });
+  expect(mocks.detail).toHaveBeenCalledTimes(1);
+  expect(mocks.detail).toHaveBeenCalledWith({ agentId: "agent-1", callLimit: 40 });
+  expect(text()).toContain("统计 token");
+  expect(text()).toContain("qwen3.8-max · thinking xhigh");
+  expect(text()).toContain("168k / 262k");
+  expect(text()).toContain("64%");
+  expect(text()).toContain("$2.500");
+  expect(text()).toContain("官方价估算");
+  expect(text()).toContain("8.2M");
+  expect(text()).toContain("79 次调用 · 3 轮");
+  expect(text()).toContain("97.8%");
 });
 
-test("close button dismisses the popover through the host close callback", async () => {
+test("shows the newest turn and marks it in progress while the agent runs", async () => {
+  mocks.agent = { status: "running", title: "统计 token" };
   await renderPopover();
-  await flush();
-
-  const close = renderer.root.find((node) => node.props?.accessibilityLabel === "关闭 Token 面板");
-  expect(close.find((node) => (node.type as unknown as string) === "Text").children.join("")).toBe("关闭");
-  act(() => {
-    close.props.onPress();
-  });
-
-  expect(mocks.close).toHaveBeenCalled();
+  expect(text()).toContain("本轮 · 第 3 轮（进行中）");
+  expect(text()).toContain("↑4.2k · ↓1.3k · 缓存读 900k · 12 次调用 · $0.310");
+  expect(text()).toContain("运行中");
 });
 
-test("hides the wide call columns even on wide layouts", async () => {
+test("keeps the breakdown, per-model split and calls folded until asked", async () => {
   await renderPopover();
-  await flush();
-  expandCalls();
-
-  const text = visible();
-  expect(text).toContain("8.2M");
-  expect(text).not.toContain(" ctx");
+  expect(text()).not.toContain("7,964,160");
+  expect(text()).not.toContain("#79");
+  await press("展开Token 明细");
+  expect(text()).toContain("7,964,160");
+  expect(text()).toContain("Pi 记账花费");
+  await press("展开按模型");
+  expect(text()).toContain("工具与摘要");
+  await press("展开最近调用");
+  expect(text()).toContain("#79");
+  expect(text()).toContain("更早的调用不再保留明细");
 });
 
-test("keeps the call table collapsed until the header is pressed", async () => {
+test("hides the per-model section when the session used a single model", async () => {
+  mocks.detail.mockResolvedValue({ ...okDetail, perModel: [okDetail.perModel[0]] });
   await renderPopover();
-  await flush();
-
-  expect(visible()).not.toContain("#79");
-
-  expandCalls();
-
-  const text = visible();
-  expect(text).toContain("#79");
-  expect(text).toContain("更早的调用已从内存中丢弃");
-  expect(text).toContain("$0.042"); // per-call official-price estimate
+  expect(text()).not.toContain("按模型");
 });
 
-test("drops the extra background layer on dark themes", async () => {
-  await renderPopover({
-    ...popoverProps,
-    theme: { colors: { ...theme.colors, surface0: "#17181a" } },
-  } as unknown as PluginButtonContentProps);
-  await flush();
-
-  expect(visible()).toContain("\"backgroundColor\":\"transparent\"");
-});
-
-test("explains a surface outside an agent context", async () => {
-  await renderPopover({ ...popoverProps, context: "workspace", agentId: undefined } as unknown as PluginButtonContentProps);
-  await flush();
-
-  expect(visible()).toContain("该表面只服务于 agent 上下文");
-});
-
-test("explains a session that has not started yet", async () => {
-  mocks.snapshot.mockResolvedValue({
-    readAt: "2026-09-11T08:40:00.000Z",
-    agents: [{ ...okSnapshot, status: "no_session", sessionFile: null, totalTokens: 0 }],
-  });
-
+test("draws one sparkline bar per call", async () => {
+  mocks.detail.mockResolvedValue({ ...okDetail, calls: [okDetail.calls[0], { ...okDetail.calls[0], index: 78, contextTokens: 80_000, stopReason: "error" }] });
   await renderPopover();
-  await flush();
-
-  const text = visible();
-  expect(text).toContain("Pi 会话文件还没生成");
-  expect(text).not.toContain("按模型拆分");
+  const spark = renderer.root.find((node) => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("最近 2 次调用"));
+  expect(spark.children).toHaveLength(2);
 });
 
-test("explains non-Pi agents instead of showing zeroes", async () => {
-  mocks.snapshot.mockResolvedValue({
-    readAt: "2026-09-11T08:40:00.000Z",
-    agents: [{ ...okSnapshot, status: "not_pi", provider: "codex" }],
-  });
-
+test("colors context above 90% as danger", async () => {
+  withSnapshot({ contextPercent: 93.2 });
   await renderPopover();
-  await flush();
-
-  expect(visible()).toContain("本插件只统计 Pi 会话");
-});
-
-test("surfaces a failing read", async () => {
-  mocks.snapshot.mockResolvedValue({
-    readAt: "2026-09-11T08:40:00.000Z",
-    agents: [{ ...okSnapshot, status: "error", error: "EACCES", sessionFile: null, totalTokens: 0 }],
-  });
-
-  await renderPopover();
-  await flush();
-
-  const text = visible();
-  expect(text).toContain("读取失败：");
-  expect(text).toContain("EACCES");
-  expect(text).not.toContain("会话文件");
+  expect(text()).toContain("93%");
+  expect(text()).toContain(theme.colors.statusDanger);
 });
 
 test("marks context unknown after a compaction like Pi does", async () => {
-  mocks.snapshot.mockResolvedValue({
-    readAt: "2026-09-11T08:40:00.000Z",
-    agents: [{ ...okSnapshot, contextStale: true, contextPercent: null }],
-  });
-
+  withSnapshot({ contextStale: true, contextPercent: null });
   await renderPopover();
-  await flush();
+  expect(text()).toContain("压缩后待更新");
+});
 
-  const text = visible();
-  expect(text).toContain("压缩后待更新");
+test("falls back to Pi's recorded cost when the model is not in the price table", async () => {
+  withSnapshot({ estimatedCost: 0 });
+  await renderPopover();
+  expect(text()).toContain("$0.421");
+  expect(text()).toContain("Pi 记账");
+});
+
+test("explains a session that has not started yet", async () => {
+  withSnapshot({ status: "no_session" });
+  await renderPopover();
+  expect(text()).toContain("Pi 会话文件还没生成");
+});
+
+test("explains non-Pi agents instead of showing zeroes", async () => {
+  withSnapshot({ status: "not_pi", provider: "codex" });
+  await renderPopover();
+  expect(text()).toContain("codex provider");
+});
+
+test("surfaces a failing read", async () => {
+  mocks.detail.mockRejectedValue(new Error("EACCES"));
+  await renderPopover();
+  expect(text()).toContain("读取失败：EACCES");
+});
+
+test("drops the extra background layer on dark themes", async () => {
+  await renderPopover({ ...popoverProps, theme: { colors: { ...theme.colors, surface0: "#181818" } } } as PluginButtonContentProps);
+  const screen = renderer.root.findAll((node) => (node.type as unknown) === "View")[0]!;
+  expect(screen.props.style.backgroundColor).toBe("transparent");
+});
+
+test("refresh refetches the detail", async () => {
+  await renderPopover();
+  await press("立即刷新");
+  expect(mocks.detail).toHaveBeenCalledTimes(2);
+});
+
+test("breaks the context down by category with shares of the window", async () => {
+  await renderPopover();
+  expect(text()).toContain("消息");
+  expect(text()).toContain("工具调用");
+  expect(text()).toContain("系统工具");
+  expect(text()).toContain("  31 个");
+  expect(text()).toContain("  68 个");
+  expect(text()).toContain("  1 个文件");
+  // 110k of a 262k window.
+  expect(text()).toContain("42.0%");
+  // A 40-token MCP listing stays visible instead of rounding to 0.0%.
+  expect(text()).toContain("<0.1%");
+  expect(text()).toContain("bash 80k · read 30k");
+  expect(text()).toContain("已对齐最近一次请求的实际用量");
+  // Empty categories get neither a row nor a bar segment.
+  expect(text()).not.toContain("思考");
+  const bar = renderer.root.find((node) => node.props.style?.[1]?.flexDirection === "row" && node.props.style?.[1]?.height === 6);
+  expect(bar.children).toHaveLength(7);
+});
+
+test("folds the composition from the context header and remembers it across opens", async () => {
+  await renderPopover();
+  await press("收起上下文构成");
+  expect(text()).not.toContain("系统工具");
+  await act(async () => renderer.unmount());
+  await renderPopover();
+  expect(text()).not.toContain("系统工具");
+  await press("展开上下文构成");
+  expect(text()).toContain("系统工具");
+});
+
+test("notes content waiting for the next request and uncalibrated estimates", async () => {
+  mocks.detail.mockResolvedValue({ ...okDetail, context: { ...okDetail.context, calibrated: false, pendingTokens: 12_300 } });
+  await renderPopover();
+  expect(text()).toContain("压缩后还没有实际用量可对齐");
+  expect(text()).toContain("另有约 12k 新内容将计入下一次请求");
+});
+
+test("falls back to the plain gauge for sessions without a recorded prompt", async () => {
+  mocks.detail.mockResolvedValue({ ...okDetail, context: null });
+  await renderPopover();
+  expect(text()).not.toContain("系统工具");
+  expect(renderer.root.findAll((node) => node.props.accessibilityLabel === "展开上下文构成" || node.props.accessibilityLabel === "收起上下文构成")).toHaveLength(0);
 });

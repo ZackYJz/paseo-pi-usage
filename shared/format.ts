@@ -51,57 +51,56 @@ export function formatPercent(percent: number | null): string {
   return percent >= 10 ? percent.toFixed(0) : percent.toFixed(1);
 }
 
-export interface PillLabelInput {
+/**
+ * The one cost figure the UI shows: official-price estimate when the model is in
+ * the price table, else whatever Pi recorded (relay channels often record 0).
+ */
+export function displayCost(snapshot: { estimatedCost: number; totals: { cost: number } }): number {
+  return snapshot.estimatedCost > 0 ? snapshot.estimatedCost : snapshot.totals.cost;
+}
+
+/** Same thresholds as Pi's footer: above 70% warn, above 90% danger. */
+export type ContextLevel = "unknown" | "ok" | "warn" | "danger";
+export function contextLevel(percent: number | null): ContextLevel {
+  if (percent === null || !Number.isFinite(percent)) return "unknown";
+  return percent > 90 ? "danger" : percent > 70 ? "warn" : "ok";
+}
+
+export interface PillInput {
   status: "ok" | "no_session" | "not_pi" | "error";
   totals: UsageTotals;
+  estimatedCost: number;
   provider?: string | null;
   error?: string | null;
 }
 
 /**
- * Hover tooltip with the full-precision breakdown the pill label is too narrow
- * to carry (Paseo truncates pill labels at ~17 glyphs).
+ * Pill label, about 15 glyphs wide: session-wide total tokens and cost. Context
+ * use is left to Paseo's own composer meter; the popover still charts it.
  */
-export function buildPillTooltip(
-  snapshot: PillLabelInput & { contextPercent: number | null; contextStale?: boolean },
-): string {
-  if (snapshot.status === "error") {
-    return `Pi token 用量 · ${snapshot.error ? `读取失败：${snapshot.error}` : "读取失败"}`;
-  }
-  if (snapshot.status === "not_pi") {
-    return `Pi token 用量 · 当前代理使用 ${snapshot.provider ?? "其他"} provider，不统计 Pi 用量`;
-  }
-  if (snapshot.status === "no_session") {
-    return "Pi token 用量 · 暂无活动会话";
-  }
-  // status === "ok"
-  const bits = [`↑${formatTokens(snapshot.totals.input)}`, `↓${formatTokens(snapshot.totals.output)}`];
-  const rate = sessionCacheHitRate(snapshot.totals);
-  if (rate !== null) bits.push(`缓存命中 ${rate.toFixed(1)}%`);
-  if (snapshot.totals.cost > 0) bits.push(formatCost(snapshot.totals.cost));
-  if (snapshot.contextStale) {
-    bits.push("上下文刷新中…");
-  } else if (snapshot.contextPercent !== null) {
-    bits.push(`上下文 ${formatPercent(snapshot.contextPercent)}%`);
-  }
-  return `Pi token 用量 · ${bits.join(" ")}`;
-}
-
-/**
- * One-line status text for the composer pill: ↑input ↓output, session-wide cache
- * hit rate, cost. Paseo truncates long pill labels, so the remaining breakdown
- * (cache writes, reasoning, context) lives in the panel.
- */
-export function buildPillLabel(snapshot: PillLabelInput): string {
+export function buildPillLabel(snapshot: PillInput): string {
   if (snapshot.status === "error") return "读取失败";
   if (snapshot.status === "not_pi") return "非 Pi";
   if (snapshot.status !== "ok") return "—";
+  const tokens = formatTokens(snapshot.totals.input + snapshot.totals.output + snapshot.totals.cacheRead + snapshot.totals.cacheWrite);
+  const cost = displayCost(snapshot);
+  return cost > 0 ? `${tokens} · ${formatCost(cost)}` : tokens;
+}
 
-  const parts = [`↑${formatTokens(snapshot.totals.input)}`, `↓${formatTokens(snapshot.totals.output)}`];
-  const rate = sessionCacheHitRate(snapshot.totals);
-  // Bare percent: the pill's host-imposed width budget is ~15 glyphs; the tooltip
-  // spells out that this is the session-wide cache hit rate.
-  if (rate !== null && rate > 0) parts.push(`${Math.round(rate)}%`);
-  if (snapshot.totals.cost > 0) parts.push(formatCost(snapshot.totals.cost));
-  return parts.join(" ");
+/** Hover tooltip: the full one-line summary the pill has no room for. */
+export function buildPillTooltip(snapshot: PillInput): string {
+  if (snapshot.status === "error") {
+    return `Pi 用量 · ${snapshot.error ? `读取失败：${snapshot.error}` : "读取失败"}`;
+  }
+  if (snapshot.status === "not_pi") {
+    return `Pi 用量 · 当前代理使用 ${snapshot.provider ?? "其他"} provider，不统计 Pi 用量`;
+  }
+  if (snapshot.status === "no_session") return "Pi 用量 · 暂无活动会话";
+  const t = snapshot.totals;
+  const bits = [`总 token ${formatTokens(t.input + t.output + t.cacheRead + t.cacheWrite)}（↑${formatTokens(t.input)} ↓${formatTokens(t.output)} 缓存读 ${formatTokens(t.cacheRead)}）`];
+  const cost = displayCost(snapshot);
+  if (cost > 0) bits.push(`花费 ${formatCost(cost)}${snapshot.estimatedCost > 0 ? "（官方价估算）" : ""}`);
+  const rate = sessionCacheHitRate(t);
+  if (rate !== null) bits.push(`缓存命中 ${rate.toFixed(1)}%`);
+  return `Pi 用量 · ${bits.join(" · ")}`;
 }

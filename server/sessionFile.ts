@@ -3,7 +3,8 @@ import { emptyUsageTotals, type UsageTotals } from "../shared/format";
 import { estimateCostForModel } from "../shared/pricing";
 // Types only: the wire schemas in shared/usage.ts are the single source of truth
 // for these shapes, so the reader cannot drift from what the client receives.
-import type { CallUsage, ModelUsage } from "../shared/usage";
+import type { CallUsage, ContextBreakdown, ModelUsage, TurnUsage } from "../shared/usage";
+import { ContextLedger } from "./contextLedger";
 
 /**
  * Incremental reader for one Pi session JSONL file.
@@ -96,6 +97,10 @@ function totalTokensOf(usage: PiUsage): number {
   return num(usage.input) + num(usage.output) + num(usage.cacheRead) + num(usage.cacheWrite);
 }
 
+function emptyTurn(turn: number, startedAt: string | null): TurnUsage {
+  return { turn, callCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, estimated: 0, startedAt };
+}
+
 function splitLines(buffer: Buffer): { lines: Buffer[]; rest: Buffer } {
   const lines: Buffer[] = [];
   let start = 0;
@@ -119,6 +124,12 @@ export class PiSessionFileReader {
   private callList: CallUsage[] = [];
   private perModel = new Map<string, { tokens: number; cost: number; estimated: number }>();
   private aggregate: SessionAggregate = initialAggregate();
+  /** Turn being accumulated now, and the newest earlier turn that made at least one call. */
+  private currentTurn: TurnUsage | null = null;
+  private previousTurn: TurnUsage | null = null;
+  private ledger = new ContextLedger();
+  /** Entry id of the assistant message that `contextUsedTokens` was measured from. */
+  private contextAnchorId: string | null = null;
 
   constructor(path: string, options?: { maxCalls?: number }) {
     this.path = path;
@@ -138,6 +149,15 @@ export class PiSessionFileReader {
     return this.truncated;
   }
 
+  /**
+   * The newest turn with at least one LLM call. Right after a user message the
+   * new turn is still empty, so the previous one stays visible until a call lands.
+   */
+  get lastTurn(): TurnUsage | null {
+    const turn = this.currentTurn && this.currentTurn.callCount > 0 ? this.currentTurn : this.previousTurn;
+    return turn ? { ...turn } : null;
+  }
+
   get fileBytes(): number {
     return this.bytes;
   }
@@ -151,6 +171,12 @@ export class PiSessionFileReader {
     }))
       .filter((entry) => entry.tokens > 0 || entry.cost > 0 || entry.estimated > 0)
       .sort((a, b) => b.estimated - a.estimated || b.cost - a.cost || b.tokens - a.tokens);
+  }
+
+  /** What the active context is made of; see server/contextLedger.ts. */
+  contextBreakdown(): ContextBreakdown | null {
+    const measured = !this.aggregate.contextStale && this.contextAnchorId !== null && this.aggregate.contextUsedTokens > 0;
+    return this.ledger.breakdown(measured ? { id: this.contextAnchorId!, tokens: this.aggregate.contextUsedTokens } : null);
   }
 
   /** Reads only the bytes appended since the previous call. */
@@ -195,6 +221,10 @@ export class PiSessionFileReader {
     this.perModel = new Map();
     this.truncated = false;
     this.aggregate = initialAggregate();
+    this.currentTurn = null;
+    this.previousTurn = null;
+    this.ledger = new ContextLedger();
+    this.contextAnchorId = null;
   }
 
   private applyLine(raw: string): void {
@@ -208,6 +238,7 @@ export class PiSessionFileReader {
     } catch {
       return; // A partially flushed line is retried on the next refresh.
     }
+    this.ledger.add(entry);
 
     const type = entry.type;
     if (type === "session") {
@@ -250,6 +281,8 @@ export class PiSessionFileReader {
 
     if (role === "user") {
       this.aggregate.userTurns += 1;
+      if (this.currentTurn && this.currentTurn.callCount > 0) this.previousTurn = this.currentTurn;
+      this.currentTurn = emptyTurn(this.aggregate.userTurns, at);
       return;
     }
     if (role === "toolResult") {
@@ -282,6 +315,7 @@ export class PiSessionFileReader {
     // Pi ignores aborted/errored/zero usage when deriving the live context size.
     if (stopReason !== "aborted" && stopReason !== "error" && contextTokens > 0) {
       this.aggregate.contextUsedTokens = contextTokens;
+      this.contextAnchorId = str(entry.id);
       this.aggregate.contextStale = false;
       const promptTokens = num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite);
       this.aggregate.cacheHitRate = promptTokens > 0 ? (num(usage.cacheRead) / promptTokens) * 100 : null;
@@ -315,6 +349,16 @@ export class PiSessionFileReader {
     const tokens = totalTokensOf(usage);
     this.aggregate.totalTokens += tokens;
 
+    // Usage before the first user message (extension bootstraps) counts as turn 0.
+    const turn = (this.currentTurn ??= emptyTurn(this.aggregate.userTurns, call?.at ?? null));
+    turn.input += num(usage.input);
+    turn.output += num(usage.output);
+    turn.cacheRead += num(usage.cacheRead);
+    turn.cacheWrite += num(usage.cacheWrite);
+    turn.cost += costOf(usage);
+    turn.estimated += estimated;
+    if (call) turn.callCount += 1;
+
     const bucket = this.perModel.get(modelKey) ?? { tokens: 0, cost: 0, estimated: 0 };
     bucket.tokens += tokens;
     bucket.cost += costOf(usage);
@@ -324,6 +368,7 @@ export class PiSessionFileReader {
     if (!call) return;
     this.callList.push({
       index: call.index,
+      turn: this.aggregate.userTurns,
       at: call.at,
       provider: call.provider,
       model: call.model,

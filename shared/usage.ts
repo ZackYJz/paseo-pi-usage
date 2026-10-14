@@ -6,6 +6,8 @@ export const PI_USAGE_PANEL_ID = "pi-usage";
 /** One LLM call, i.e. one assistant message carrying usage in Pi's session JSONL. */
 export const callUsageSchema = z.object({
   index: z.number(),
+  /** User turn the call belongs to (1-based); 0 for calls before the first user message. */
+  turn: z.number(),
   at: z.string().nullable(),
   provider: z.string(),
   model: z.string(),
@@ -81,18 +83,66 @@ export const piUsageSnapshotRpc = defineRpc({
   }),
 });
 
-export const piUsageCallsRpc = defineRpc({
-  name: "pi-usage.calls",
+/** Usage of one user turn: every LLM call and tool/summary usage after that user message. */
+export const turnUsageSchema = z.object({
+  turn: z.number(),
+  callCount: z.number(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  cost: z.number(),
+  estimated: z.number(),
+  startedAt: z.string().nullable(),
+});
+
+export type TurnUsage = z.infer<typeof turnUsageSchema>;
+
+/** Display order: conversation first, then the fixed prompt-and-tool overhead. */
+export const CONTEXT_CATEGORIES = ["messages", "toolCalls", "thinking", "mcp", "systemTools", "skills", "projectContext", "systemPrompt"] as const;
+export const contextCategorySchema = z.enum(CONTEXT_CATEGORIES);
+export type ContextCategory = z.infer<typeof contextCategorySchema>;
+
+/**
+ * What the current model context is made of, estimated from the session file
+ * (Pi persists the system prompt by section and every tool declaration). When
+ * `calibrated`, the categories are scaled to sum to the newest measured request.
+ */
+export const contextBreakdownSchema = z.object({
+  total: z.number(),
+  calibrated: z.boolean(),
+  /** Estimated tokens appended after the measured request (e.g. a fresh tool result); not in `total`. */
+  pendingTokens: z.number(),
+  categories: z.array(z.object({
+    key: contextCategorySchema,
+    tokens: z.number(),
+    /** Tools, skills or instruction files behind the category, where that means something. */
+    count: z.number().nullable(),
+  })),
+  /** Tool calls plus their results, per tool, largest first. */
+  topTools: z.array(z.object({ name: z.string(), tokens: z.number() })),
+});
+
+export type ContextBreakdown = z.infer<typeof contextBreakdownSchema>;
+
+/**
+ * Everything the popover shows, in one round trip: the snapshot, the newest
+ * turn, the per-model split and the newest calls (newest first). The calls also
+ * feed the context sparkline, so they are fetched even while the list is folded.
+ */
+export const piUsageDetailRpc = defineRpc({
+  name: "pi-usage.detail",
   input: z.object({
     agentId: z.string(),
-    limit: z.number().int().min(1).max(200).default(40),
+    callLimit: z.number().int().min(1).max(200).default(40),
   }),
   output: z.object({
-    agentId: z.string(),
-    status: usageStatusSchema,
-    error: z.string().nullable(),
+    snapshot: usageSnapshotSchema,
+    lastTurn: turnUsageSchema.nullable(),
     truncated: z.boolean(),
     calls: z.array(callUsageSchema),
     perModel: z.array(modelUsageSchema),
+    /** Null for sessions written before Pi persisted its system prompt. */
+    context: contextBreakdownSchema.nullable(),
   }),
 });

@@ -223,3 +223,62 @@ describe("PiSessionFileReader", () => {
     expect(reader.snapshot.callCount).toBe(1);
   });
 });
+
+describe("per-turn usage", () => {
+  const userAt = (at: string) =>
+    JSON.stringify({ type: "message", id: `u-${at}`, timestamp: at, message: { role: "user", content: [{ type: "text", text: "go" }] } });
+
+  it("accumulates calls and tool usage into the newest turn and tags each call with it", async () => {
+    const path = await makeSessionFile([
+      header,
+      userAt("2026-09-11T08:02:00.000Z"),
+      assistant("qwen3.8-max", "aliyun", usage(100, 10)),
+      userAt("2026-09-11T08:05:00.000Z"),
+      assistant("qwen3.8-max", "aliyun", usage(200, 20, 1000)),
+      toolResult(usage(5, 0)),
+      assistant("qwen3.8-max", "aliyun", usage(300, 30, 2000)),
+    ]);
+    const reader = new PiSessionFileReader(path);
+    await reader.refresh();
+    expect(reader.calls.map((call) => call.turn)).toEqual([1, 2, 2]);
+    expect(reader.lastTurn).toMatchObject({ turn: 2, callCount: 2, input: 505, output: 50, cacheRead: 3000, startedAt: "2026-09-11T08:05:00.000Z" });
+  });
+
+  it("keeps showing the previous turn until the new one makes its first call", async () => {
+    const path = await makeSessionFile([header, userAt("2026-09-11T08:02:00.000Z"), assistant("qwen3.8-max", "aliyun", usage(100, 10))]);
+    const reader = new PiSessionFileReader(path);
+    await reader.refresh();
+    await appendFile(path, userAt("2026-09-11T08:09:00.000Z") + "\n", "utf8");
+    await reader.refresh();
+    expect(reader.lastTurn).toMatchObject({ turn: 1, callCount: 1 });
+    await appendFile(path, assistant("qwen3.8-max", "aliyun", usage(7, 1)) + "\n", "utf8");
+    await reader.refresh();
+    expect(reader.lastTurn).toMatchObject({ turn: 2, callCount: 1, input: 7 });
+  });
+
+  it("has no turn before any usage", async () => {
+    const reader = new PiSessionFileReader(await makeSessionFile([header, userAt("2026-09-11T08:02:00.000Z")]));
+    await reader.refresh();
+    expect(reader.lastTurn).toBeNull();
+  });
+});
+
+describe("context breakdown", () => {
+  const line = (id: string, parentId: string | null, message: Record<string, unknown>) => JSON.stringify({ type: "message", id, parentId, timestamp: "2026-09-11T08:02:00.000Z", message });
+
+  it("calibrates to the newest measured request and reports what came after it as pending", async () => {
+    const path = await makeSessionFile([
+      header,
+      line("s", null, { role: "system", content: "", sections: { preamble: "p".repeat(4000) }, toolsAdded: [{ name: "bash", description: "b".repeat(2000) }] }),
+      line("u", "s", { role: "user", content: [{ type: "text", text: "u".repeat(400) }] }),
+      line("a", "u", { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: {} }], provider: "rh", model: "m", usage: usage(1800, 50), stopReason: "toolUse" }),
+      line("r", "a", { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "r".repeat(800) }] }),
+    ]);
+    const reader = new PiSessionFileReader(path);
+    await reader.refresh();
+    const breakdown = reader.contextBreakdown()!;
+    expect(breakdown.calibrated).toBe(true);
+    expect(Math.abs(breakdown.total - 1850)).toBeLessThanOrEqual(2);
+    expect(breakdown.pendingTokens).toBe(200);
+  });
+});

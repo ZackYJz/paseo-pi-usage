@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPillLabel, buildPillTooltip, emptyUsageTotals, formatCost, formatPercent, formatTokens, sessionCacheHitRate } from "./format";
+import { buildPillLabel, buildPillTooltip, contextLevel, emptyUsageTotals, formatCost, formatPercent, formatTokens, sessionCacheHitRate } from "./format";
 
 describe("formatTokens", () => {
   it("matches Pi's footer formatting", () => {
@@ -31,56 +31,47 @@ describe("formatPercent", () => {
 });
 
 describe("buildPillLabel", () => {
-  const totals = { input: 12_300, output: 4500, cacheRead: 1_200_000, cacheWrite: 0, reasoning: 900, cost: 0.421 };
+  const totals = { input: 12_300, output: 4500, cacheRead: 1_200_000, cacheWrite: 0, reasoning: 900, cost: 0 };
+  const ok = { status: "ok" as const, totals, estimatedCost: 0.4214 };
 
-  it("shows input, output, session cache hit rate and cost", () => {
-    expect(buildPillLabel({ status: "ok", totals })).toBe("↑12k ↓4.5k 99% $0.421");
+  it("shows session total tokens and the official-price cost estimate", () => {
+    expect(buildPillLabel(ok)).toBe("1.2M · $0.421");
   });
 
-  it("drops the hit rate when nothing was cached and the cost when it is zero", () => {
-    expect(buildPillLabel({ status: "ok", totals: { ...totals, cacheRead: 0, cacheWrite: 0, cost: 0 } })).toBe(
-      "↑12k ↓4.5k",
-    );
-    expect(buildPillLabel({ status: "ok", totals: { ...totals, cost: 0 } })).toBe("↑12k ↓4.5k 99%");
+  it("falls back to Pi's recorded cost and drops the cost when there is none", () => {
+    expect(buildPillLabel({ ...ok, estimatedCost: 0, totals: { ...totals, cost: 0.2 } })).toBe("1.2M · $0.200");
+    expect(buildPillLabel({ ...ok, estimatedCost: 0 })).toBe("1.2M");
   });
 
   it("reports unresolved and failing states without numbers", () => {
-    expect(buildPillLabel({ status: "no_session", totals: emptyUsageTotals() })).toBe("—");
-    expect(buildPillLabel({ status: "error", totals: emptyUsageTotals() })).toBe("读取失败");
+    expect(buildPillLabel({ ...ok, status: "no_session" })).toBe("—");
+    expect(buildPillLabel({ ...ok, status: "error" })).toBe("读取失败");
+    expect(buildPillLabel({ ...ok, status: "not_pi" })).toBe("非 Pi");
   });
 });
 
 describe("buildPillTooltip", () => {
-  const totals = { input: 12_300, output: 4500, cacheRead: 1_200_000, cacheWrite: 0, reasoning: 900, cost: 0.421 };
+  const totals = { input: 12_300, output: 4500, cacheRead: 1_200_000, cacheWrite: 0, reasoning: 900, cost: 0 };
+  const ok = { status: "ok" as const, totals, estimatedCost: 0.4214 };
 
-  it("carries the full-precision breakdown the label cannot", () => {
-    expect(buildPillTooltip({ status: "ok", totals, contextPercent: 38.1 })).toBe(
-      "Pi token 用量 · ↑12k ↓4.5k 缓存命中 99.0% $0.421 上下文 38%",
-    );
+  it("spells out the token split, cost source and cache hit rate", () => {
+    expect(buildPillTooltip(ok)).toBe("Pi 用量 · 总 token 1.2M（↑12k ↓4.5k 缓存读 1.2M） · 花费 $0.421（官方价估算） · 缓存命中 99.0%");
   });
 
   it("surfaces the failure reason instead of a generic line", () => {
-    expect(buildPillTooltip({ status: "error", totals: emptyUsageTotals(), contextPercent: null, error: "EACCES" })).toBe(
-      "Pi token 用量 · 读取失败：EACCES",
-    );
-    expect(buildPillTooltip({ status: "error", totals: emptyUsageTotals(), contextPercent: null })).toBe(
-      "Pi token 用量 · 读取失败",
-    );
+    expect(buildPillTooltip({ ...ok, status: "error", error: "EACCES" })).toBe("Pi 用量 · 读取失败：EACCES");
+    expect(buildPillTooltip({ ...ok, status: "error" })).toBe("Pi 用量 · 读取失败");
   });
 
   it("names the provider that has no Pi usage and the missing session", () => {
-    expect(
-      buildPillTooltip({ status: "not_pi", totals: emptyUsageTotals(), contextPercent: null, provider: "codex" }),
-    ).toBe("Pi token 用量 · 当前代理使用 codex provider，不统计 Pi 用量");
-    expect(buildPillTooltip({ status: "no_session", totals: emptyUsageTotals(), contextPercent: null })).toBe(
-      "Pi token 用量 · 暂无活动会话",
-    );
+    expect(buildPillTooltip({ ...ok, status: "not_pi", provider: "codex" })).toBe("Pi 用量 · 当前代理使用 codex provider，不统计 Pi 用量");
+    expect(buildPillTooltip({ ...ok, status: "no_session" })).toBe("Pi 用量 · 暂无活动会话");
   });
+});
 
-  it("explains a momentarily unknown context after a compaction", () => {
-    expect(
-      buildPillTooltip({ status: "ok", totals, contextPercent: null, contextStale: true }),
-    ).toContain("上下文刷新中…");
+describe("contextLevel", () => {
+  it("uses Pi's 70% / 90% thresholds", () => {
+    expect([null, 50, 70, 70.1, 90, 90.1].map(contextLevel)).toEqual(["unknown", "ok", "ok", "warn", "warn", "danger"]);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { PaseoApi } from "@getpaseo/client";
-import type { CallUsage, ModelUsage, UsageSnapshot } from "../shared/usage";
+import type { CallUsage, ContextBreakdown, ModelUsage, TurnUsage, UsageSnapshot } from "../shared/usage";
 import { emptyUsageTotals } from "../shared/format";
 import { PiSessionResolver } from "./resolve";
 import { PiSessionFileReader } from "./sessionFile";
@@ -10,6 +10,15 @@ import { PiSessionFileReader } from "./sessionFile";
  */
 
 const MAX_READERS = 200;
+
+export interface UsageDetail {
+  snapshot: UsageSnapshot;
+  lastTurn: TurnUsage | null;
+  truncated: boolean;
+  calls: CallUsage[];
+  perModel: ModelUsage[];
+  context: ContextBreakdown | null;
+}
 const CONCURRENCY = 8;
 
 function baseSnapshot(agentId: string): UsageSnapshot {
@@ -57,61 +66,33 @@ export class PiUsageService {
     return { readAt: new Date().toISOString(), agents };
   }
 
-  /** Newest call first, so the panel can render the tail without paging. */
-  async calls(
-    agentId: string,
-    limit: number,
-    paseo: PaseoApi,
-  ): Promise<{
-    agentId: string;
-    status: UsageSnapshot["status"];
-    error: string | null;
-    truncated: boolean;
-    calls: CallUsage[];
-    perModel: ModelUsage[];
-  }> {
-    try {
-      const resolved = await this.resolver.resolve(agentId, paseo);
-      if (resolved.kind !== "ok") {
-        return {
-          agentId,
-          status: resolved.kind === "not_pi" ? "not_pi" : "no_session",
-          error: null,
-          truncated: false,
-          calls: [],
-          perModel: [],
-        };
-      }
-      const reader = await this.read(agentId, resolved.path);
-      return {
-        agentId,
-        status: "ok",
-        error: null,
-        truncated: reader.isTruncated,
-        calls: reader.calls.slice(-limit).reverse(),
-        perModel: reader.models,
-      };
-    } catch (error) {
-      return {
-        agentId,
-        status: "error",
-        error: messageOf(error),
-        truncated: false,
-        calls: [],
-        perModel: [],
-      };
-    }
+  /** Snapshot plus the newest turn, per-model split, newest calls (newest first) and context composition. */
+  async detail(agentId: string, callLimit: number, paseo: PaseoApi): Promise<UsageDetail> {
+    const { snapshot, reader } = await this.snapshotWithReader(agentId, paseo);
+    if (!reader) return { snapshot, lastTurn: null, truncated: false, calls: [], perModel: [], context: null };
+    return {
+      snapshot,
+      lastTurn: reader.lastTurn,
+      truncated: reader.isTruncated,
+      calls: reader.calls.slice(-callLimit).reverse(),
+      perModel: reader.models,
+      context: reader.contextBreakdown(),
+    };
   }
 
   private async snapshotOne(agentId: string, paseo: PaseoApi): Promise<UsageSnapshot> {
+    return (await this.snapshotWithReader(agentId, paseo)).snapshot;
+  }
+
+  private async snapshotWithReader(agentId: string, paseo: PaseoApi): Promise<{ snapshot: UsageSnapshot; reader: PiSessionFileReader | null }> {
     const empty = baseSnapshot(agentId);
     try {
       const resolved = await this.resolver.resolve(agentId, paseo);
       if (resolved.kind === "not_pi") {
-        return { ...empty, status: "not_pi", provider: resolved.provider };
+        return { reader: null, snapshot: { ...empty, status: "not_pi", provider: resolved.provider } };
       }
       if (resolved.kind === "no_session") {
-        return { ...empty, status: "no_session", provider: resolved.provider, sessionId: resolved.sessionId };
+        return { reader: null, snapshot: { ...empty, status: "no_session", provider: resolved.provider, sessionId: resolved.sessionId } };
       }
 
       const reader = await this.read(agentId, resolved.path);
@@ -122,7 +103,7 @@ export class PiUsageService {
           ? (aggregate.contextUsedTokens / window) * 100
           : null;
 
-      return {
+      const snapshot: UsageSnapshot = {
         ...empty,
         status: "ok",
         error: null,
@@ -146,8 +127,9 @@ export class PiUsageService {
         lastActivityAt: aggregate.lastActivityAt,
         fileBytes: reader.fileBytes,
       };
+      return { snapshot, reader };
     } catch (error) {
-      return { ...empty, status: "error", error: messageOf(error) };
+      return { reader: null, snapshot: { ...empty, status: "error", error: messageOf(error) } };
     }
   }
 

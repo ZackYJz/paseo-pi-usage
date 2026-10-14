@@ -51,14 +51,14 @@ function snapshotFor(agentId: string, totalTokens: number) {
     sessionId: "s1",
     sessionFile: "/tmp/s1.jsonl",
     totals: { input: 12_300, output: 4500, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0 },
-    estimatedCost: 0,
+    estimatedCost: 0.045,
     totalTokens,
     callCount: 3,
     userTurns: 1,
     compactions: 0,
-    contextUsedTokens: 0,
-    contextWindowTokens: null,
-    contextPercent: null,
+    contextUsedTokens: 57_000,
+    contextWindowTokens: 262_144,
+    contextPercent: 22,
     contextStale: false,
     cacheHitRate: null,
     startedAt: null,
@@ -152,9 +152,8 @@ describe("startUsagePills", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect([...context.pills.keys()]).toEqual(["pi-1"]);
-    // No cache reads yet, so the hit rate is a real 0% — the tooltip spells it out
-    // while the label drops it (see buildPillLabel's `rate > 0` guard).
-    expect(context.pills.get("pi-1")?.title).toBe("Pi token 用量 · ↑12k ↓4.5k 缓存命中 0.0%");
+    expect(context.pills.get("pi-1")?.label).toBe("17k · $0.045");
+    expect(context.pills.get("pi-1")?.title).toBe("Pi 用量 · 总 token 17k（↑12k ↓4.5k 缓存读 0） · 花费 $0.045（官方价估算） · 缓存命中 0.0%");
 
     stop();
   });
@@ -170,8 +169,8 @@ describe("startUsagePills", () => {
 
     // Bootstrap polls every tracked agent once, newest first from the batch result.
     expect(context.polled[0].sort()).toEqual(["cold", "hot"]);
-    expect(context.pills.get("hot")?.label).toBe("↑12k ↓4.5k");
-    expect(context.pills.get("cold")?.label).toBe("↑12k ↓4.5k");
+    expect(context.pills.get("hot")?.label).toBe("17k · $0.045");
+    expect(context.pills.get("cold")?.label).toBe("17k · $0.045");
 
     context.polled.length = 0;
     await vi.advanceTimersByTimeAsync(2500);
@@ -222,7 +221,7 @@ describe("startUsagePills", () => {
     const stop = startUsagePills(context.client);
     await vi.advanceTimersByTimeAsync(0);
     const label = context.pills.get("hot")?.label;
-    expect(label).toBe("↑12k ↓4.5k");
+    expect(label).toBe("17k · $0.045");
 
     context.rpc.mockRejectedValueOnce(new Error("daemon gone"));
     context.polled.length = 0;
@@ -244,4 +243,5 @@ describe("startUsagePills", () => {
     expect(context.rpc.mock.calls[0][0]).toBe(piUsageSnapshotRpc);
     stop();
   });
+
 });

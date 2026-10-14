@@ -4,9 +4,9 @@ import { PI_USAGE_PANEL_ID, piUsageSnapshotRpc, type UsageSnapshot } from "../sh
 import { PiUsagePopover } from "./panel";
 
 /**
- * Per-agent composer pill that behaves like Pi's status bar: it shows cumulative
- * ↑input ↓output and the session-wide cache hit rate, and opens the detail panel.
- * The hover tooltip carries the full breakdown (cache, cost, context).
+ * Per-agent composer pill: session-wide total tokens and cost. Context use is
+ * already on Paseo's own composer meter. It opens the detail popover; the hover
+ * tooltip carries the input / output / cache split and cache hit rate.
  *
  * Paseo's own agent snapshot only carries `lastUsage` (one turn), so totals come
  * from the daemon handler that reads Pi's session JSONL.
@@ -60,23 +60,6 @@ export function startUsagePills(client: PluginClientContext): () => void {
   let inFlight = false;
   let lastErrorLog = 0;
 
-  function labelFor(snapshot: UsageSnapshot): string {
-    return buildPillLabel({
-      status: snapshot.status,
-      totals: snapshot.totals,
-    });
-  }
-
-  function tooltipFor(snapshot: UsageSnapshot): string {
-    return buildPillTooltip({
-      status: snapshot.status,
-      totals: snapshot.totals,
-      provider: snapshot.provider,
-      error: snapshot.error,
-      contextPercent: snapshot.contextPercent,
-      contextStale: snapshot.contextStale,
-    });
-  }
 
   function track(agent: AgentLike): void {
     if (stopped) return;
@@ -111,7 +94,7 @@ export function startUsagePills(client: PluginClientContext): () => void {
       button: {
         title: "Pi token 用量",
         icon: "Gauge",
-        label: "π …",
+        label: "…",
         behavior: {
           kind: "popover",
           Content: PiUsagePopover,
@@ -156,8 +139,8 @@ export function startUsagePills(client: PluginClientContext): () => void {
     for (const snapshot of agents) {
       const agent = tracked.get(snapshot.agentId);
       if (!agent) continue;
-      const label = labelFor(snapshot);
-      const tooltip = tooltipFor(snapshot);
+      const label = buildPillLabel(snapshot);
+      const tooltip = buildPillTooltip(snapshot);
       if (label === agent.label && tooltip === agent.tooltip) continue;
       agent.label = label;
       agent.tooltip = tooltip;
